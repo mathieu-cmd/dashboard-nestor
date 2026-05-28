@@ -26,7 +26,15 @@ _CSS = """
 html,body{margin:0;padding:0;height:100%}
 body{font-family:-apple-system,"Segoe UI",system-ui,sans-serif;font-size:14px;
   color:var(--fg);background:var(--bg);min-height:100vh;
-  display:grid;grid-template-columns:240px 1fr;grid-template-rows:1fr;}
+  display:grid;grid-template-columns:180px 1fr;grid-template-rows:1fr;
+  transition:grid-template-columns .15s ease;}
+body.sidebar-collapsed{grid-template-columns:60px 1fr;}
+body.sidebar-collapsed .sidebar{padding:16px 8px;}
+body.sidebar-collapsed .brand{justify-content:center;font-size:0;padding:0 0 12px;}
+body.sidebar-collapsed .brand .dot{width:14px;height:14px;}
+body.sidebar-collapsed .nav-item{justify-content:center;padding:10px 6px;}
+body.sidebar-collapsed .nav-item .label{display:none;}
+body.sidebar-collapsed .footer{display:none;}
 
 /* Mobile top-bar (alleen zichtbaar op smal scherm) */
 .mobile-bar{display:none;background:var(--sidebar-bg);color:#fff;
@@ -43,9 +51,12 @@ body{font-family:-apple-system,"Segoe UI",system-ui,sans-serif;font-size:14px;
 .sidebar{background:var(--sidebar-bg);color:var(--sidebar-fg);
   padding:24px 16px;display:flex;flex-direction:column;gap:8px;
   height:100vh;position:sticky;top:0;}
-.brand{color:#fff;font-size:16px;font-weight:700;letter-spacing:.3px;
-  padding:0 8px 16px;display:flex;align-items:center;gap:8px;
-  border-bottom:1px solid #1e293b;margin-bottom:12px;}
+.brand{color:#fff;font-size:15px;font-weight:700;letter-spacing:.3px;
+  padding:0 8px 12px;display:flex;align-items:center;gap:8px;
+  border-bottom:1px solid #1e293b;margin-bottom:12px;cursor:pointer;
+  user-select:none}
+.brand:hover{opacity:.85}
+.brand .toggle-hint{margin-left:auto;color:#475569;font-size:11px;font-weight:400}
 .brand .dot{width:10px;height:10px;border-radius:50%;background:var(--accent);
   box-shadow:0 0 12px rgba(79,70,229,.6);}
 .nav-item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;
@@ -122,9 +133,9 @@ h2{font-size:13px;margin:24px 0 10px;color:var(--muted);
 .kpi .val{font-size:24px;font-weight:700;line-height:1.1;letter-spacing:-.5px}
 .kpi .sub{color:var(--muted);font-size:11px;margin-top:8px}
 
-/* Charts grid */
-.charts-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
-@media (max-width:1100px){.charts-grid{grid-template-columns:1fr}}
+/* Charts grid — compactere gap zodat charts dichter bij elkaar staan */
+.charts-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+@media (max-width:1100px){.charts-grid{grid-template-columns:1fr;gap:8px}}
 .chart-card{background:var(--panel);border:1px solid var(--border);
   border-radius:var(--radius);box-shadow:var(--shadow-sm);padding:16px 18px;
   position:relative}
@@ -162,8 +173,9 @@ h2{font-size:13px;margin:24px 0 10px;color:var(--muted);
 .modal-content{position:relative;width:100%;max-width:1200px;height:80vh;max-height:800px;
   background:#fff;border-radius:14px;padding:24px;
   display:flex;flex-direction:column;box-shadow:0 25px 50px -12px rgba(0,0,0,.5);z-index:1}
-.modal-content h3{margin:0 0 4px;font-size:18px;font-weight:700;padding-right:40px}
-.modal-content .modal-meta{color:var(--muted);font-size:12px;margin-bottom:16px}
+.modal-content h3{margin:0 0 6px;font-size:22px;font-weight:800;
+  padding-right:48px;letter-spacing:-.3px;color:var(--fg)}
+.modal-content .modal-meta{color:var(--muted);font-size:13px;margin-bottom:18px}
 .modal-canvas-wrap{flex:1;min-height:0;position:relative}
 .modal-canvas-wrap canvas{max-height:none !important}
 .modal-close{position:absolute;top:16px;right:16px;width:32px;height:32px;
@@ -320,8 +332,9 @@ def shell(title: str, active: str, body: str) -> str:
     def navlink(href: str, key: str, label: str) -> str:
         cls = "nav-item active" if key == active else "nav-item"
         return (
-            f'<a class="{cls}" href="{href}">'
-            f'<span class="ic">{_icon(key)}</span>{label}</a>'
+            f'<a class="{cls}" href="{href}" title="{_html.escape(label)}">'
+            f'<span class="ic">{_icon(key)}</span>'
+            f'<span class="label">{_html.escape(label)}</span></a>'
         )
 
     return f"""<!DOCTYPE html>
@@ -343,7 +356,10 @@ def shell(title: str, active: str, body: str) -> str:
   <div class="title">Dashboard Nestor</div>
 </div>
 <aside class="sidebar">
-  <div class="brand"><span class="dot"></span>Dashboard Nestor</div>
+  <div class="brand" onclick="toggleSidebar()" title="Klik om in/uit te klappen">
+    <span class="dot"></span><span class="label">Dashboard Nestor</span>
+    <span class="toggle-hint">«</span>
+  </div>
   {navlink('/dashboards', 'dashboards', 'Dashboards')}
   {navlink('/explorer', 'explorer', 'Explorer')}
   {navlink('/export', 'export', 'Export')}
@@ -358,6 +374,22 @@ def shell(title: str, active: str, body: str) -> str:
 document.querySelectorAll(".sidebar .nav-item").forEach(a => {{
   a.addEventListener("click", () => document.body.classList.remove("sidebar-open"));
 }});
+// Sidebar collapse-toggle (desktop) — onthoud keuze in localStorage
+function toggleSidebar() {{
+  // op mobile: open/sluit overlay
+  if (window.innerWidth <= 760) {{
+    document.body.classList.toggle("sidebar-open");
+    return;
+  }}
+  const collapsed = document.body.classList.toggle("sidebar-collapsed");
+  try {{ localStorage.setItem("dn_sidebar_collapsed", collapsed ? "1" : "0"); }} catch (e) {{}}
+}}
+// Restore staat bij page-load
+try {{
+  if (localStorage.getItem("dn_sidebar_collapsed") === "1") {{
+    document.body.classList.add("sidebar-collapsed");
+  }}
+}} catch (e) {{}}
 </script>
 <script>
 window.fmtEur = (v) => v == null ? "—" :
@@ -496,10 +528,7 @@ function showChartEmpty(id, msg) {{
 // Period-override: lees keuze uit dropdown, applieer per pinned spec.
 function effectivePeriod(p) {{
   const ov = (document.getElementById("period-override") || {{}}).value || "";
-  // LTM-rolling metrics negeren de override (gebruiken altijd 'all')
-  const specs = p.series_json ? safeParse(p.series_json, []) : [{{metric: p.metric}}];
-  const allLtm = specs.length > 0 && specs.every(s => /(^|_)ltm$/.test(s.metric || ""));
-  if (allLtm || !ov) return {{period_mode: p.period_mode, period_value: p.period_value}};
+  if (!ov) return {{period_mode: p.period_mode, period_value: p.period_value}};
   if (ov === "ltm")  return {{period_mode: "ltm", period_value: null}};
   if (ov === "ytd")  return {{period_mode: "ytd", period_value: null}};
   if (ov === "all")  return {{period_mode: "all", period_value: null}};
@@ -606,18 +635,39 @@ function buildChartConfig(p, combined, seriesList, showDataLabels) {{
     options: {{
       responsive: true, maintainAspectRatio: false,
       interaction: {{ mode: "index", intersect: false }},
+      // Extra padding zodat datalabels op de meest-rechtse en bovenste
+      // punten niet door de as-rand worden afgekapt.
+      layout: {{ padding: {{ left: 4, right: 20, top: 24, bottom: 4 }} }},
       plugins: {{
-        legend: {{ display: combined.datasets.length > 1, position: "bottom",
-                   labels: {{ boxWidth: 12, padding: 12, font: {{ size: 11 }} }} }},
+        legend: {{ display: combined.datasets.length > 1, position: "top",
+                   align: "center",
+                   labels: {{ boxWidth: 14, padding: 14,
+                              font: {{ size: 12, weight: "600" }} }} }},
         tooltip: {{
           callbacks: {{
             label: (ctx) => ctx.dataset.label + ": " + fmtFor(ctx.dataset)(ctx.parsed.y ?? ctx.parsed)
           }}
         }},
         datalabels: showDataLabels ? {{
-          align: "top", anchor: "end", offset: 4,
-          color: (ctx) => ctx.dataset.borderColor,
-          font: {{ size: 10, weight: "600" }},
+          // Smart positioning:
+          //  - laatste punt -> label LINKS van het punt (anders valt het buiten canvas)
+          //  - eerste punt  -> label RECHTS van het punt
+          //  - omzet-serie (links axis) -> label BOVEN de lijn
+          //  - marge-serie (rechts axis) -> label ONDER de lijn (zo blijven series visueel apart)
+          align: (ctx) => {{
+            const n = ctx.dataset.data.length;
+            if (ctx.dataIndex === n - 1) return "start";
+            if (ctx.dataIndex === 0) return "end";
+            return ctx.dataset.yAxisID === "y2" ? "bottom" : "top";
+          }},
+          anchor: "center",
+          offset: 6,
+          clip: false,
+          backgroundColor: (ctx) => ctx.dataset.borderColor,
+          color: "#fff",
+          padding: {{ left: 5, right: 5, top: 2, bottom: 2 }},
+          borderRadius: 4,
+          font: {{ size: 10, weight: "700" }},
           formatter: (v, ctx) => v == null ? "" : fmtFor(ctx.dataset)(v),
         }} : false
       }},
@@ -689,10 +739,12 @@ function openChartModal(id) {{
     (pinned && pinned.segment ? pinned.segment : "") + " · " +
     (pinned && pinned.period_mode ? pinned.period_mode : "");
   const cfg = buildChartConfig(data.p, data.combined, data.seriesList, true);
-  // Force modal chart altijd datalabels + grotere fonts
-  cfg.options.plugins.legend.labels.font = {{ size: 13 }};
+  // Modal-versie: grotere fonts + extra padding rondom canvas
+  cfg.options.plugins.legend.labels.font = {{ size: 14, weight: "600" }};
+  cfg.options.layout.padding = {{ left: 12, right: 36, top: 32, bottom: 8 }};
   if (cfg.options.plugins.datalabels) {{
-    cfg.options.plugins.datalabels.font = {{ size: 12, weight: "600" }};
+    cfg.options.plugins.datalabels.font = {{ size: 12, weight: "700" }};
+    cfg.options.plugins.datalabels.padding = {{ left: 7, right: 7, top: 3, bottom: 3 }};
   }}
   document.getElementById("chart-modal").classList.add("open");
   if (MODAL_CHART) {{ try {{ MODAL_CHART.destroy(); }} catch (e) {{}} }}

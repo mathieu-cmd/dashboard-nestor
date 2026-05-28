@@ -190,16 +190,33 @@ _LTM_VALUE_EXPR = {
 }
 
 
-def ltm_rolling(metric: str, segment: str) -> dict[str, Any]:
+def ltm_rolling(
+    metric: str,
+    segment: str,
+    period_mode: str = "all",
+    period_value: Optional[str] = None,
+) -> dict[str, Any]:
     """Voortschrijdend 12-maands totaal — geeft 'gladde' LTM-grafiek.
 
-    Vereist SQLite >= 3.25 (window functions). Railway nixpacks heeft moderne sqlite.
+    Accepteert nu een period_filter op het EINDPUNT van elk LTM-totaal
+    (= de maand X). Concreet: period_mode='since', period_value='2025-01'
+    toont LTM-cijfers van januari 2025 → nu, elk punt is rolling 12 mo
+    eindigend bij die maand.
+
+    Vereist SQLite >= 3.25 (window functions).
     """
     if metric not in _LTM_VALUE_EXPR:
         raise ValueError(f"Geen LTM voor metric: {metric}")
 
     val_expr = _LTM_VALUE_EXPR[metric]
     seg_w, seg_p = segment_where(segment)
+
+    # Period filter op output-maand (= einde van rolling window)
+    per_w, per_p = _period_filter(period_mode, period_value)
+    final_where_parts = ["n_months = 12"]
+    if per_w and per_w != "1=1":
+        final_where_parts.append(per_w)
+    final_where = " AND ".join(final_where_parts)
 
     sql = f"""
         WITH monthly AS (
@@ -223,12 +240,13 @@ def ltm_rolling(metric: str, segment: str) -> dict[str, Any]:
         SELECT jaar || '-' || printf('%02d', maand) AS lbl,
                ltm_sum AS val
         FROM ordered
-        WHERE n_months = 12
+        WHERE {final_where}
         ORDER BY jaar, maand
     """
 
+    params = list(seg_p) + list(per_p)
     with cache_conn() as conn:
-        rows = conn.execute(sql, seg_p).fetchall()
+        rows = conn.execute(sql, params).fetchall()
 
     return {
         "labels": [r[0] for r in rows],
@@ -237,8 +255,8 @@ def ltm_rolling(metric: str, segment: str) -> dict[str, Any]:
         "segment": segment,
         "segment_label": segment_label(segment),
         "grain": "month",
-        "period_mode": "ltm_rolling",
-        "period_value": None,
+        "period_mode": period_mode,
+        "period_value": period_value,
     }
 
 
@@ -399,7 +417,7 @@ def compute(
         return time_series(metric, segment, grain, period_mode, period_value)
     if typ == "ltm_rolling":
         base = metric[: -len("_ltm")]  # 'omzet_ltm' -> 'omzet'
-        return ltm_rolling(base, segment)
+        return ltm_rolling(base, segment, period_mode, period_value)
     if typ == "top_klanten":
         base = metric[len("top_klanten_"):]
         return top_klanten(base, segment, period_mode, period_value, top_n)

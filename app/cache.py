@@ -528,8 +528,8 @@ _DEFAULT_PINNED_MULTI = [
         '{"metric":"marge","segment":"nestor","label":"Bruto marge","axis":"right"}]',
     ),
     (
-        "Nestor — Omzet & Bruto marge LTM (rolling 12 mo)",
-        "nestor", "line", "month", "all", None, None, 1,
+        "Nestor — Omzet & Bruto marge LTM (rolling 12 mo, vanaf 2025-01)",
+        "nestor", "line", "month", "since", "2025-01", None, 1,
         '[{"metric":"omzet_ltm","segment":"nestor","label":"Omzet LTM","axis":"left"},'
         '{"metric":"marge_ltm","segment":"nestor","label":"Bruto marge LTM","axis":"right"}]',
     ),
