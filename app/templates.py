@@ -263,26 +263,37 @@ om er toe te voegen.</p></div>"""
 <h1>Dashboards</h1>
 <p class="subtitle">Vastgepinde KPI-grafieken — vernieuwen automatisch bij elke sync.</p>
 
-<div class="toolbar">
-  <label>Segment voor KPI's</label>
-  <select id="kpi-segment">{seg_opts}</select>
-  <label>Periode</label>
-  <select id="kpi-period">
-    <option value="ltm" selected>Laatste 12 maanden</option>
-    <option value="ytd">Year-to-date</option>
-    <option value="all">Volledige historiek</option>
-  </select>
+<div class="panel" id="sync-bar"
+     style="display:flex;align-items:center;gap:18px;flex-wrap:wrap;justify-content:space-between">
+  <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
+    <div>
+      <div class="lbl" style="color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px">Laatste sync</div>
+      <div class="val" id="db-last-sync" style="font-size:14px;font-weight:600;margin-top:2px">…</div>
+    </div>
+    <div>
+      <div class="lbl" style="color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px">Status</div>
+      <div class="val" id="db-sync-status" style="font-size:14px;font-weight:600;margin-top:2px">…</div>
+    </div>
+    <div>
+      <div class="lbl" style="color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px">Rijen in cache</div>
+      <div class="val" id="db-rows" style="font-size:14px;font-weight:600;margin-top:2px">…</div>
+    </div>
+    <div>
+      <div class="lbl" style="color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px">Auto-sync</div>
+      <div class="val" style="font-size:14px;font-weight:600;margin-top:2px">dagelijks 11:59</div>
+    </div>
+  </div>
+  <button class="primary" id="db-sync-btn"
+          style="font-size:14px;padding:10px 20px;box-shadow:0 2px 8px rgba(79,70,229,.35)">
+    ↻ Sync Prato nu
+  </button>
 </div>
 
 <div class="kpi-row" id="kpi-row">
-  <div class="kpi"><div class="lbl">Omzet</div><div class="val" id="kpi-omzet">…</div>
-       <div class="sub" id="kpi-omzet-sub"></div></div>
-  <div class="kpi"><div class="lbl">Bruto marge</div><div class="val" id="kpi-marge">…</div>
-       <div class="sub" id="kpi-marge-sub"></div></div>
-  <div class="kpi"><div class="lbl">Marge %</div><div class="val" id="kpi-margepct">…</div>
-       <div class="sub" id="kpi-margepct-sub"></div></div>
-  <div class="kpi"><div class="lbl">Actieve medewerkers</div><div class="val" id="kpi-mw">…</div>
-       <div class="sub" id="kpi-mw-sub"></div></div>
+  <div class="kpi"><div class="lbl">Omzet (LTM, Nestor Core)</div><div class="val" id="kpi-omzet">…</div></div>
+  <div class="kpi"><div class="lbl">Bruto marge (LTM)</div><div class="val" id="kpi-marge">…</div></div>
+  <div class="kpi"><div class="lbl">Marge %</div><div class="val" id="kpi-margepct">…</div></div>
+  <div class="kpi"><div class="lbl">Actieve medewerkers</div><div class="val" id="kpi-mw">…</div></div>
 </div>
 
 <h2>Grafieken</h2>
@@ -337,12 +348,10 @@ async function unpin(id) {{
   if (r.ok) location.reload();
 }}
 
+// Vaste KPI: Nestor Core, laatste 12 maanden
 async function refreshKpis() {{
-  const segment = document.getElementById("kpi-segment").value;
-  const period_mode = document.getElementById("kpi-period").value;
   try {{
-    const r = await fetch("/api/kpi?segment=" + encodeURIComponent(segment)
-                          + "&period_mode=" + encodeURIComponent(period_mode));
+    const r = await fetch("/api/kpi?segment=nestor_core&period_mode=ltm");
     const d = await r.json();
     document.getElementById("kpi-omzet").textContent = window.fmtEur(d.omzet);
     document.getElementById("kpi-marge").textContent = window.fmtEur(d.marge);
@@ -350,20 +359,46 @@ async function refreshKpis() {{
       d.marge_pct == null ? "—" : window.fmtNum(d.marge_pct, 2) + "%";
     document.getElementById("kpi-mw").textContent =
       (d.medewerkers || 0).toLocaleString("nl-BE");
-    document.getElementById("kpi-omzet-sub").textContent = d.segment_label;
-    document.getElementById("kpi-marge-sub").textContent = d.segment_label;
-    document.getElementById("kpi-margepct-sub").textContent = d.segment_label;
-    document.getElementById("kpi-mw-sub").textContent = d.segment_label;
   }} catch (e) {{ console.error("kpi", e); }}
 }}
-document.getElementById("kpi-segment").addEventListener("change", refreshKpis);
-document.getElementById("kpi-period").addEventListener("change", refreshKpis);
-// Default = nestor_core
-const segSel = document.getElementById("kpi-segment");
-if ([...segSel.options].some(o => o.value === "nestor_core"))
-  segSel.value = "nestor_core";
 
-refreshKpis();
+// Sync-bar status
+async function refreshSyncBar() {{
+  try {{
+    const r = await fetch("/api/status");
+    const d = await r.json();
+    document.getElementById("db-rows").textContent =
+      (d.rows_cached || 0).toLocaleString("nl-BE");
+    const last = d.last_sync;
+    if (last) {{
+      document.getElementById("db-last-sync").textContent =
+        new Date(last.started_at).toLocaleString("nl-BE");
+      const st = document.getElementById("db-sync-status");
+      st.textContent = last.status;
+      st.className = "val " + (last.status === "ok" ? "ok" : last.status === "failed" ? "err" : "warn");
+    }} else {{
+      document.getElementById("db-last-sync").textContent = "—";
+      document.getElementById("db-sync-status").textContent = "—";
+    }}
+  }} catch (e) {{}}
+}}
+
+// Sync-knop
+document.getElementById("db-sync-btn").addEventListener("click", async function() {{
+  const btn = this; btn.disabled = true;
+  const orig = btn.textContent; btn.textContent = "Sync gepland…";
+  try {{
+    const r = await fetch("/sync/run", {{method:"POST"}});
+    const d = await r.json();
+    if (!r.ok) alert("Sync fout: " + (d.error || r.status));
+  }} catch (e) {{ alert("Sync fout: " + e); }}
+  finally {{
+    setTimeout(() => {{ btn.disabled = false; btn.textContent = orig; refreshSyncBar(); refreshKpis(); }}, 2000);
+  }}
+}});
+
+refreshSyncBar(); refreshKpis();
+setInterval(refreshSyncBar, 10000);
 PINNED.forEach(renderChart);
 </script>
 """

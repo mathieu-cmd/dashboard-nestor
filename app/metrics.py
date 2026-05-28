@@ -89,11 +89,13 @@ def _combine(parts: list[tuple[str, list]]) -> tuple[str, list]:
 
 
 _SUM_METRIC_EXPR = {
-    "omzet": "SUM(omzet_gefactureerd + omzet_te_factureren)",
-    "marge": "SUM(marge)",
-    "loonkost": "SUM(loonkost)",
-    "kost": "SUM(kost)",
-    "uren": "SUM(verloonde_uren)",
+    # COALESCE rondom omzet_te_factureren omdat NULL bij historische data
+    # anders SUM uit NULL maakt (SQL: x + NULL = NULL).
+    "omzet": "SUM(COALESCE(omzet_gefactureerd,0) + COALESCE(omzet_te_factureren,0))",
+    "marge": "SUM(COALESCE(marge,0))",
+    "loonkost": "SUM(COALESCE(loonkost,0))",
+    "kost": "SUM(COALESCE(kost,0))",
+    "uren": "SUM(COALESCE(verloonde_uren,0))",
     "medewerkers": "COUNT(DISTINCT persoonreferentieid)",
     "klanten": "COUNT(DISTINCT klantreferentieid)",
 }
@@ -157,11 +159,12 @@ def time_series(
 
 
 _LTM_VALUE_EXPR = {
-    "omzet": "omzet_gefactureerd + omzet_te_factureren",
-    "marge": "marge",
-    "loonkost": "loonkost",
-    "kost": "kost",
-    "uren": "verloonde_uren",
+    # COALESCE-veiliger voor de historische data (omzet_te_factureren = NULL)
+    "omzet": "COALESCE(omzet_gefactureerd,0) + COALESCE(omzet_te_factureren,0)",
+    "marge": "COALESCE(marge,0)",
+    "loonkost": "COALESCE(loonkost,0)",
+    "kost": "COALESCE(kost,0)",
+    "uren": "COALESCE(verloonde_uren,0)",
 }
 
 

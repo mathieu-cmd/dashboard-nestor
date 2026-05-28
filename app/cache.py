@@ -167,8 +167,9 @@ CREATE TABLE IF NOT EXISTS import_meta (
 -- View: UNION van live + historisch.
 -- Voor (jaar, maand)-combinaties die in BEIDE bronnen bestaan: kies historisch
 -- (= afgesloten data, gezaghebbender dan onze in-progress live cache).
-DROP VIEW IF EXISTS v_margelijst;
-CREATE VIEW v_margelijst AS
+-- Note: bij wijziging van deze view-definitie moet je expliciet DROP doen
+-- vanuit een migratie — CREATE VIEW IF NOT EXISTS recreëert niet bij wijziging.
+CREATE VIEW IF NOT EXISTS v_margelijst AS
 SELECT
     jaar, kwartaal, maand, week,
     vestigingseenheidreferentieid,
@@ -455,11 +456,21 @@ def get_running_sync() -> Optional[dict[str, Any]]:
 
 
 def get_row_count() -> int:
-    """Aantal rijen in de margelijst-cache."""
+    """Aantal rijen in v_margelijst (= live + historisch, met dedup)."""
     init_schema()
     with cache_conn() as conn:
-        row = conn.execute("SELECT COUNT(*) FROM margelijst").fetchone()
+        row = conn.execute("SELECT COUNT(*) FROM v_margelijst").fetchone()
         return row[0] if row else 0
+
+
+def get_row_count_breakdown() -> dict:
+    """Aantal rijen per bron — handig voor /api/status diagnostics."""
+    init_schema()
+    with cache_conn() as conn:
+        live = conn.execute("SELECT COUNT(*) FROM margelijst").fetchone()[0]
+        hist = conn.execute("SELECT COUNT(*) FROM margelijst_historisch").fetchone()[0]
+        view = conn.execute("SELECT COUNT(*) FROM v_margelijst").fetchone()[0]
+    return {"live": live, "historisch": hist, "total_in_view": view}
 
 
 # ---------------------------------------------------------------------------
