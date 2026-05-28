@@ -159,9 +159,21 @@ CREATE TABLE IF NOT EXISTS klant_mapping (
     hiant_klantref TEXT PRIMARY KEY,
     earnie_klantref TEXT NOT NULL,
     canonical_naam TEXT,
-    source TEXT NOT NULL DEFAULT 'auto'   -- 'auto' (name-match) of 'manual'
+    source TEXT NOT NULL DEFAULT 'auto'   -- 'auto', 'manual', 'confirmed'
 );
 CREATE INDEX IF NOT EXISTS idx_km_earnie ON klant_mapping(earnie_klantref);
+
+-- uren_extern: extern aangeleverde uren per (jaar, week, segment).
+-- Wordt vervangen bij elke CSV-import (TRUNCATE + INSERT).
+CREATE TABLE IF NOT EXISTS uren_extern (
+    jaar INTEGER NOT NULL,
+    week INTEGER NOT NULL,
+    segment TEXT NOT NULL,        -- 'nestor_core', 'smartmat', etc.
+    uren REAL NOT NULL,
+    PRIMARY KEY (jaar, week, segment)
+);
+CREATE INDEX IF NOT EXISTS idx_uren_extern_segment ON uren_extern(segment);
+CREATE INDEX IF NOT EXISTS idx_uren_extern_periode ON uren_extern(jaar, week);
 
 CREATE TABLE IF NOT EXISTS import_meta (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -175,28 +187,43 @@ CREATE TABLE IF NOT EXISTS import_meta (
     error TEXT
 );
 
--- View: UNION van live + historisch.
+-- View: UNION van live + historisch met klant-id-merge.
 -- Voor (jaar, maand)-combinaties die in BEIDE bronnen bestaan: kies historisch
 -- (= afgesloten data, gezaghebbender dan onze in-progress live cache).
--- Note: bij wijziging van deze view-definitie moet je expliciet DROP doen
--- vanuit een migratie — CREATE VIEW IF NOT EXISTS recreëert niet bij wijziging.
+-- Historische klantref wordt via klant_mapping omgezet naar Earnie-id wanneer
+-- gemapt, zodat dezelfde klant niet als twee aparte verschijnt.
+-- Note: bij wijziging van deze view-definitie wordt DROP gedaan via init_schema.
+DROP VIEW IF EXISTS v_margelijst;
 CREATE VIEW IF NOT EXISTS v_margelijst AS
 SELECT
-    jaar, kwartaal, maand, week,
-    vestigingseenheidreferentieid,
-    klantreferentieid, klantnaam,
-    persoonreferentieid, familienaam, voornaam,
-    loonkost, werkuitkering, bvvrijstellingen,
-    rszwerkgeversbijdragen, rszverminderingen, provisies,
-    omzet_gefactureerd, omzet_te_factureren,
-    kost, verloonde_uren, marge, margeperuur,
+    h.jaar, h.kwartaal, h.maand, h.week,
+    h.vestigingseenheidreferentieid,
+    -- Gemerged klantref: vervang HIAnt-id door Earnie-id indien gemapt
+    -- (skip 'rejected'-rijen — die mochten expliciet NIET koppelen).
+    COALESCE(
+        (SELECT km.earnie_klantref FROM klant_mapping km
+         WHERE km.hiant_klantref = h.klantreferentieid
+           AND km.source != 'rejected'),
+        h.klantreferentieid
+    ) AS klantreferentieid,
+    COALESCE(
+        (SELECT km.canonical_naam FROM klant_mapping km
+         WHERE km.hiant_klantref = h.klantreferentieid
+           AND km.source != 'rejected' AND km.canonical_naam IS NOT NULL),
+        h.klantnaam
+    ) AS klantnaam,
+    h.persoonreferentieid, h.familienaam, h.voornaam,
+    h.loonkost, h.werkuitkering, h.bvvrijstellingen,
+    h.rszwerkgeversbijdragen, h.rszverminderingen, h.provisies,
+    h.omzet_gefactureerd, h.omzet_te_factureren,
+    h.kost, h.verloonde_uren, h.marge, h.margeperuur,
     COALESCE(
         (SELECT werknemerskengetal FROM sektie_kengetal_map
          WHERE sektie_origineel = h.sektie_origineel),
         NULL
     ) AS werknemerskengetal,
-    sektie_origineel,
-    gepresteerde_uren,
+    h.sektie_origineel,
+    h.gepresteerde_uren,
     'historisch' AS bron
 FROM margelijst_historisch h
 
@@ -269,6 +296,8 @@ def init_schema() -> None:
             if cur.rowcount > 0:
                 log.info("Obsolete pin verwijderd: %s", old_title)
     _sync_sektie_mappings_from_code()
+    _sync_klant_mapping_from_code()
+    _auto_seed_klant_mapping()
     log.info("Cache schema ready at %s", cache_db_path())
 
 
@@ -278,6 +307,59 @@ def _ensure_column(conn: Any, table: str, col: str, ddl_type: str) -> None:
     if col not in cols:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl_type}")
         log.info("Migratie: kolom %s toegevoegd aan %s", col, table)
+
+
+def _sync_klant_mapping_from_code() -> None:
+    """Sync hardcoded KLANT_HIANT_TO_EARNIE naar de klant_mapping tabel
+    met source='manual'. Manual-rijen overschrijven 'auto'-rijen niet 1:1
+    om consistente data te krijgen — manual heeft voorrang."""
+    from .mappings import KLANT_HIANT_TO_EARNIE
+    if not KLANT_HIANT_TO_EARNIE:
+        return
+    with cache_conn() as conn:
+        # Bepaal voor elke manual-mapping de canonical naam vanuit live data
+        for hiant, earnie in KLANT_HIANT_TO_EARNIE.items():
+            row = conn.execute(
+                "SELECT klantnaam FROM margelijst WHERE klantreferentieid = ? "
+                "AND klantnaam IS NOT NULL LIMIT 1",
+                (earnie,),
+            ).fetchone()
+            canonical = row[0] if row else None
+            conn.execute(
+                "INSERT OR REPLACE INTO klant_mapping "
+                "(hiant_klantref, earnie_klantref, canonical_naam, source) "
+                "VALUES (?, ?, ?, 'manual')",
+                (hiant, earnie, canonical),
+            )
+
+
+def _auto_seed_klant_mapping() -> None:
+    """Auto-mapping: voor elke historische klant met identieke naam (case-
+    insensitive, trim spaces) aan een live klant, voeg mapping toe — mits
+    de IDs verschillen en er nog geen mapping bestaat."""
+    with cache_conn() as conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO klant_mapping
+              (hiant_klantref, earnie_klantref, canonical_naam, source)
+            SELECT h.klantreferentieid, l.klantreferentieid, l.klantnaam, 'auto'
+            FROM (
+                SELECT DISTINCT klantreferentieid,
+                       LOWER(TRIM(klantnaam)) AS naam_norm
+                FROM margelijst_historisch
+                WHERE klantreferentieid IS NOT NULL
+                  AND klantnaam IS NOT NULL AND klantnaam != ''
+            ) h
+            JOIN (
+                SELECT DISTINCT klantreferentieid, klantnaam,
+                       LOWER(TRIM(klantnaam)) AS naam_norm
+                FROM margelijst
+                WHERE klantreferentieid IS NOT NULL
+                  AND klantnaam IS NOT NULL AND klantnaam != ''
+            ) l ON h.naam_norm = l.naam_norm
+            WHERE h.klantreferentieid != l.klantreferentieid
+            """
+        )
 
 
 def _sync_sektie_mappings_from_code() -> None:
@@ -561,6 +643,12 @@ _DEFAULT_PINNED_MULTI = [
         '[{"metric":"omzet_ltm","segment":"nestor","label":"Omzet LTM","axis":"left"},'
         '{"metric":"marge_ltm","segment":"nestor","label":"Bruto marge LTM","axis":"right"}]',
     ),
+    (
+        "Gepresteerde uren per week — Nestor Core & Smartmat",
+        "nestor_core", "line", "week", "all", None, None, 2,
+        '[{"metric":"uren_extern","segment":"nestor_core","label":"Nestor Core"},'
+        '{"metric":"uren_extern","segment":"smartmat","label":"Smartmat"}]',
+    ),
 ]
 
 
@@ -620,6 +708,154 @@ def seed_default_pinned() -> int:
     if new_count:
         log.info("Default-pinned grafieken geseed: %d nieuwe", new_count)
     return new_count
+
+
+def find_potential_klant_duplicates(min_score: float = 0.70, max_results: int = 50) -> list[dict]:
+    """Returnt klantnamen die *bijna* overeenkomen tussen HIAnt en Earnie
+    maar niet exact (= geen auto-mapping). Sortert op similarity-score
+    aflopend. Gebruik difflib.SequenceMatcher (standard library)."""
+    from difflib import SequenceMatcher
+
+    init_schema()
+    with cache_conn() as conn:
+        # Skip klanten die al gemapt zijn
+        hiant_rows = conn.execute(
+            """
+            SELECT DISTINCT klantreferentieid, klantnaam
+            FROM margelijst_historisch
+            WHERE klantreferentieid IS NOT NULL
+              AND klantnaam IS NOT NULL AND klantnaam != ''
+              AND klantreferentieid NOT IN (SELECT hiant_klantref FROM klant_mapping)
+            ORDER BY klantnaam
+            """
+        ).fetchall()
+        live_rows = conn.execute(
+            """
+            SELECT DISTINCT klantreferentieid, klantnaam
+            FROM margelijst
+            WHERE klantreferentieid IS NOT NULL
+              AND klantnaam IS NOT NULL AND klantnaam != ''
+            """
+        ).fetchall()
+
+    def normalize(s: str) -> str:
+        return " ".join(s.lower().split())
+
+    candidates = []
+    for h_ref, h_naam in hiant_rows:
+        h_norm = normalize(h_naam)
+        for l_ref, l_naam in live_rows:
+            if h_ref == l_ref:
+                continue
+            l_norm = normalize(l_naam)
+            if h_norm == l_norm:
+                continue  # exact match — al via auto-seed gepakt
+            ratio = SequenceMatcher(None, h_norm, l_norm).ratio()
+            if ratio >= min_score:
+                candidates.append({
+                    "hiant_klantref": h_ref,
+                    "hiant_klantnaam": h_naam,
+                    "earnie_klantref": l_ref,
+                    "earnie_klantnaam": l_naam,
+                    "score": round(ratio, 3),
+                })
+
+    candidates.sort(key=lambda c: -c["score"])
+    return candidates[:max_results]
+
+
+def confirm_klant_mapping(hiant_ref: str, earnie_ref: str, canonical_naam: Optional[str] = None) -> None:
+    """Bevestig een mapping vanuit /admin. Source = 'confirmed'."""
+    init_schema()
+    with cache_conn() as conn:
+        if canonical_naam is None:
+            row = conn.execute(
+                "SELECT klantnaam FROM margelijst WHERE klantreferentieid = ? "
+                "AND klantnaam IS NOT NULL LIMIT 1",
+                (earnie_ref,),
+            ).fetchone()
+            canonical_naam = row[0] if row else None
+        conn.execute(
+            "INSERT OR REPLACE INTO klant_mapping "
+            "(hiant_klantref, earnie_klantref, canonical_naam, source) "
+            "VALUES (?, ?, ?, 'confirmed')",
+            (hiant_ref, earnie_ref, canonical_naam),
+        )
+    log.info("AUDIT: klant_mapping bevestigd %s -> %s", hiant_ref, earnie_ref)
+
+
+def reject_klant_mapping(hiant_ref: str, earnie_ref: str) -> None:
+    """Markeer een paar als 'NIET koppelen' zodat 't niet meer in de
+    verwarrende-lijst verschijnt. Gebruikt source='rejected'."""
+    init_schema()
+    with cache_conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO klant_mapping "
+            "(hiant_klantref, earnie_klantref, canonical_naam, source) "
+            "VALUES (?, ?, NULL, 'rejected')",
+            (hiant_ref, earnie_ref),
+        )
+    log.info("AUDIT: klant_mapping verworpen %s -> %s", hiant_ref, earnie_ref)
+
+
+# ---------------------------------------------------------------------------
+# uren_extern — extern aangeleverde gepresteerde uren per (jaar, week, segment)
+# ---------------------------------------------------------------------------
+
+
+def import_uren_extern(rows: list[dict]) -> dict:
+    """Vervang de uren_extern tabel met de meegegeven rijen.
+
+    Elke rij: {'jaar': int, 'week': int, 'segment': str, 'uren': float}.
+    Returnt {'rows_loaded': N}.
+    """
+    init_schema()
+    valid = []
+    for r in rows:
+        try:
+            jaar = int(r["jaar"])
+            week = int(r["week"])
+            segment = str(r["segment"]).strip().lower()
+            uren = float(r["uren"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        if not segment or jaar < 2000 or jaar > 2100 or week < 1 or week > 53:
+            continue
+        valid.append((jaar, week, segment, uren))
+
+    with cache_conn() as conn:
+        conn.execute("BEGIN")
+        try:
+            conn.execute("DELETE FROM uren_extern")
+            conn.executemany(
+                "INSERT INTO uren_extern (jaar, week, segment, uren) VALUES (?, ?, ?, ?)",
+                valid,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    log.info("uren_extern: %d rijen geladen", len(valid))
+    return {"rows_loaded": len(valid)}
+
+
+def get_uren_extern_summary() -> dict:
+    """Statistieken voor /admin: aantal rijen, segmenten, periode-range."""
+    init_schema()
+    with cache_conn() as conn:
+        n = conn.execute("SELECT COUNT(*) FROM uren_extern").fetchone()[0]
+        segs = [r[0] for r in conn.execute(
+            "SELECT DISTINCT segment FROM uren_extern ORDER BY segment"
+        ).fetchall()]
+        date_range = conn.execute(
+            "SELECT MIN(jaar*100+week), MAX(jaar*100+week) FROM uren_extern"
+        ).fetchone()
+    return {
+        "rows": n,
+        "segments": segs,
+        "periode_van": date_range[0] if date_range and date_range[0] else None,
+        "periode_tot": date_range[1] if date_range and date_range[1] else None,
+    }
 
 
 def reset_pinned_charts() -> int:

@@ -788,7 +788,9 @@ function openChartModal(id) {{
     cfg.options.plugins.datalabels.font = {{ size: 13, weight: "700" }};
     cfg.options.plugins.datalabels.padding = {{ left: 8, right: 8, top: 4, bottom: 4 }};
     cfg.options.plugins.datalabels.offset = 12;
-    // In modal: gebruik VOLLEDIG format (niet compact) — er is ruimte genoeg
+    // In modal: ALTIJD tonen (override 'auto' uit inline-versie) en
+    // volledig format gebruiken — er is ruimte genoeg.
+    cfg.options.plugins.datalabels.display = true;
     cfg.options.plugins.datalabels.formatter = (v, ctx) => {{
       if (v == null) return "";
       const fmt = window.unitFormatter(ctx.dataset._unit || "");
@@ -1200,6 +1202,34 @@ def admin_body(historisch_summary: dict[str, Any]) -> str:
   </form>
 </div>
 
+<h2>Uren per week — extern aangeleverd</h2>
+<div class="panel">
+  <p style="margin:0 0 10px;color:var(--muted);font-size:13px">
+    Eenmalige CSV-import voor de Nestor Core + Smartmat uren per week
+    (historie tot maart 2026 — voor de live periode vanaf april 2026 gebruiken
+    we Prato-data).
+    Format: <code>jaar;week;segment;uren</code> · UTF-8 · semicolon · Belgische komma.
+    Segment-waarden: <code>nestor_core</code> of <code>smartmat</code>.
+  </p>
+  <form id="uren-import-form" enctype="multipart/form-data">
+    <input type="file" id="uren-file" name="file" accept=".csv,text/csv" required>
+    <div class="actions">
+      <button type="submit" class="primary" id="uren-import-btn">Importeren (overschrijft)</button>
+      <small id="uren-import-status" style="align-self:center"></small>
+    </div>
+  </form>
+</div>
+
+<h2>Verwarrende klanten — koppelen of negeren</h2>
+<div class="panel">
+  <p style="margin:0 0 10px;color:var(--muted);font-size:13px">
+    Klanten die <em>bijna</em> dezelfde naam hebben tussen HIAnt en Earnie
+    maar niet exact. Bevestig om te koppelen (= worden 1 klant), of
+    negeer om ze apart te houden.
+  </p>
+  <div id="dups-table"><small>laden…</small></div>
+</div>
+
 <h2>Dashboards</h2>
 <div class="panel">
   <p style="margin:0 0 10px;color:var(--muted);font-size:13px">
@@ -1212,6 +1242,84 @@ def admin_body(historisch_summary: dict[str, Any]) -> str:
   </div>
 </div>
 <script>
+// Uren-import
+document.getElementById("uren-import-form").addEventListener("submit", async (e) => {{
+  e.preventDefault();
+  const file = document.getElementById("uren-file").files[0];
+  if (!file) return;
+  const btn = document.getElementById("uren-import-btn");
+  const stat = document.getElementById("uren-import-status");
+  btn.disabled = true; stat.textContent = "Bezig…";
+  const fd = new FormData(); fd.append("file", file);
+  try {{
+    const r = await fetch("/admin/import-uren-extern", {{method:"POST", body:fd}});
+    const d = await r.json();
+    if (r.ok && d.status === "ok") {{
+      stat.innerHTML = `<span class="ok">${{d.rows_loaded}} rijen geladen.</span>`;
+    }} else {{
+      stat.innerHTML = `<span class="err">Fout: ${{d.error || r.status}}</span>`;
+    }}
+  }} catch (err) {{
+    stat.innerHTML = `<span class="err">${{err}}</span>`;
+  }} finally {{ btn.disabled = false; }}
+}});
+
+// Verwarrende klanten
+async function loadDuplicates() {{
+  const wrap = document.getElementById("dups-table");
+  wrap.innerHTML = "<small>laden…</small>";
+  try {{
+    const r = await fetch("/api/klant-duplicates");
+    const d = await r.json();
+    const dups = d.duplicates || [];
+    if (!dups.length) {{
+      wrap.innerHTML = '<small style="color:var(--ok)">Geen verwarrende klanten gevonden.</small>';
+      return;
+    }}
+    const rows = dups.map(c => `
+      <tr data-h="${{c.hiant_klantref}}" data-e="${{c.earnie_klantref}}">
+        <td style="padding:6px 12px 6px 0"><code>${{c.hiant_klantref}}</code></td>
+        <td style="padding:6px 12px 6px 0">${{c.hiant_klantnaam}}</td>
+        <td style="padding:6px 12px 6px 0;color:var(--muted)">→</td>
+        <td style="padding:6px 12px 6px 0"><code>${{c.earnie_klantref}}</code></td>
+        <td style="padding:6px 12px 6px 0">${{c.earnie_klantnaam}}</td>
+        <td style="padding:6px 12px 6px 0;text-align:right;color:var(--muted)">${{(c.score*100).toFixed(0)}}%</td>
+        <td style="padding:6px 0;text-align:right">
+          <button class="primary" onclick="confirmDup(this)">Koppel</button>
+          <button class="danger" onclick="rejectDup(this)">Negeer</button>
+        </td>
+      </tr>`).join("");
+    wrap.innerHTML = `<table style="border-collapse:collapse;font-size:13px;width:100%">
+      <thead><tr style="text-align:left;color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase">
+        <th>HIAnt id</th><th>HIAnt naam</th><th></th><th>Earnie id</th><th>Earnie naam</th>
+        <th style="text-align:right">Match</th><th></th>
+      </tr></thead><tbody>${{rows}}</tbody></table>`;
+  }} catch (e) {{
+    wrap.innerHTML = `<small class="err">Fout: ${{e}}</small>`;
+  }}
+}}
+async function confirmDup(btn) {{
+  const tr = btn.closest("tr");
+  const h = tr.dataset.h, eRef = tr.dataset.e;
+  await fetch("/api/klant-mapping/confirm", {{
+    method:"POST", headers:{{"Content-Type":"application/json"}},
+    body: JSON.stringify({{hiant_klantref: h, earnie_klantref: eRef}})
+  }});
+  tr.style.opacity = "0.4";
+  setTimeout(loadDuplicates, 300);
+}}
+async function rejectDup(btn) {{
+  const tr = btn.closest("tr");
+  const h = tr.dataset.h, eRef = tr.dataset.e;
+  await fetch("/api/klant-mapping/reject", {{
+    method:"POST", headers:{{"Content-Type":"application/json"}},
+    body: JSON.stringify({{hiant_klantref: h, earnie_klantref: eRef}})
+  }});
+  tr.style.opacity = "0.4";
+  setTimeout(loadDuplicates, 300);
+}}
+loadDuplicates();
+
 document.getElementById("reset-pins-btn").addEventListener("click", async () => {{
   if (!confirm("Alle vastgepinde grafieken worden verwijderd en de defaults opnieuw geplaatst. Doorgaan?")) return;
   const s = document.getElementById("reset-pins-status");

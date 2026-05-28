@@ -136,12 +136,16 @@ def time_series(
 
     expr = _SUM_METRIC_EXPR[metric]
 
+    extra_where: tuple[str, list] = ("1=1", [])
     if grain == "month":
         group_expr = "jaar, maand"
         label_expr = "jaar || '-' || printf('%02d', maand)"
     elif grain == "week":
         group_expr = "jaar, week"
         label_expr = "jaar || '-W' || printf('%02d', week)"
+        # HIAnt-data heeft week=NULL. Filter die uit zodat week-grain
+        # alleen rijen toont met echte weeknummers (= live Earnie-data).
+        extra_where = ("week IS NOT NULL", [])
     elif grain == "year":
         group_expr = "jaar"
         label_expr = "CAST(jaar AS TEXT)"
@@ -150,7 +154,7 @@ def time_series(
 
     seg_w, seg_p = segment_where(segment)
     per_w, per_p = _period_filter(period_mode, period_value)
-    where, params = _combine([(seg_w, seg_p), (per_w, per_p)])
+    where, params = _combine([(seg_w, seg_p), (per_w, per_p), extra_where])
 
     sql = (
         f"SELECT {label_expr} AS lbl, {expr} AS val "
@@ -379,6 +383,55 @@ def _to_number(value: Any) -> float | int | None:
 
 
 # Beschrijving van wat elke metric-key doet, voor de UI dropdown.
+def uren_extern_per_week(
+    segment: str,
+    period_mode: str = "all",
+    period_value: Optional[str] = None,
+) -> dict[str, Any]:
+    """Lees uren_extern voor één segment. Levert week-grain time-series."""
+    per_w, per_p = _period_filter_uren_extern(period_mode, period_value)
+    sql = f"""
+        SELECT jaar || '-W' || printf('%02d', week) AS lbl, uren
+        FROM uren_extern
+        WHERE segment = ? AND ({per_w})
+        ORDER BY jaar, week
+    """
+    with cache_conn() as conn:
+        rows = conn.execute(sql, [segment] + per_p).fetchall()
+    return {
+        "labels": [r[0] for r in rows],
+        "values": [_to_number(r[1]) for r in rows],
+        "metric": "uren_extern",
+        "segment": segment,
+        "segment_label": segment_label(segment),
+        "grain": "week",
+        "period_mode": period_mode,
+        "period_value": period_value,
+    }
+
+
+def _period_filter_uren_extern(period_mode: str, period_value: Optional[str]) -> tuple[str, list]:
+    """Period-filter voor uren_extern (heeft alleen jaar+week)."""
+    from datetime import date
+    today = date.today()
+    if period_mode == "all":
+        return "1=1", []
+    if period_mode == "year":
+        return "jaar = ?", [int(period_value or today.year)]
+    if period_mode == "since":
+        # period_value YYYY-MM -> converteer naar (jaar, week) drempel
+        if not period_value:
+            raise ValueError("period_value vereist bij 'since'")
+        sy = int(period_value[:4])
+        return "jaar >= ?", [sy]
+    if period_mode == "ltm":
+        # ~52 weken terug
+        return "(jaar*100 + week) >= ?", [(today.year - 1) * 100 + today.isocalendar().week]
+    if period_mode == "ytd":
+        return "jaar = ?", [today.year]
+    return "1=1", []
+
+
 METRIC_REGISTRY: dict[str, dict[str, Any]] = {
     "omzet": {"label": "Omzet (gefactureerd + te factureren)", "type": "time_series", "chart": "line", "unit": "EUR"},
     "marge": {"label": "Bruto marge", "type": "time_series", "chart": "line", "unit": "EUR"},
@@ -396,6 +449,7 @@ METRIC_REGISTRY: dict[str, dict[str, Any]] = {
     "top_klanten_marge": {"label": "Top N klanten op bruto marge", "type": "top_klanten", "chart": "bar", "unit": "EUR", "needs_top_n": True},
     "top_klanten_uren": {"label": "Top N klanten op verloonde uren", "type": "top_klanten", "chart": "bar", "unit": "uur", "needs_top_n": True},
     "uren_per_medewerker": {"label": "Gem. uren / medewerker per klant", "type": "uren_per_medewerker", "chart": "bar", "unit": "uur/pers", "needs_top_n": True},
+    "uren_extern": {"label": "Gepresteerde uren per week (extern aangeleverd)", "type": "uren_extern", "chart": "line", "unit": "uur"},
 }
 
 
@@ -423,4 +477,6 @@ def compute(
         return top_klanten(base, segment, period_mode, period_value, top_n)
     if typ == "uren_per_medewerker":
         return uren_per_medewerker(segment, period_mode, period_value, top_n)
+    if typ == "uren_extern":
+        return uren_extern_per_week(segment, period_mode, period_value)
     raise ValueError(f"Geen handler voor metric-type: {typ}")

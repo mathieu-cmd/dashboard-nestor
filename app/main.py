@@ -42,11 +42,16 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Stre
 from .cache import (
     add_pinned_chart,
     cache_conn,
+    confirm_klant_mapping,
     delete_pinned_chart,
+    find_potential_klant_duplicates,
     get_last_sync,
     get_row_count,
+    get_uren_extern_summary,
+    import_uren_extern,
     init_schema,
     list_pinned_charts,
+    reject_klant_mapping,
     reset_pinned_charts,
     seed_default_pinned,
     sync_from_prato,
@@ -363,6 +368,82 @@ def api_sektie_mappings_list():
 @app.get("/api/historisch/summary")
 def api_historisch_summary():
     return get_historisch_summary()
+
+
+# ---------------------------------------------------------------------------
+# Klant-merge: verwarrende-lijst + bevestig/verwerp
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/klant-duplicates")
+def api_klant_duplicates(min_score: float = Query(0.70, ge=0.5, le=1.0)):
+    """Lijst van klant-paren die mogelijk hetzelfde zijn (HIAnt ↔ Earnie),
+    op basis van naam-similarity >= min_score."""
+    return {"duplicates": find_potential_klant_duplicates(min_score=min_score, max_results=200)}
+
+
+@app.post("/api/klant-mapping/confirm")
+def api_klant_mapping_confirm(payload: dict = Body(...)):
+    try:
+        hiant = payload["hiant_klantref"]
+        earnie = payload["earnie_klantref"]
+    except KeyError as e:
+        return JSONResponse(status_code=400, content={"error": f"Missing: {e}"})
+    confirm_klant_mapping(str(hiant), str(earnie), payload.get("canonical_naam"))
+    return {"ok": True}
+
+
+@app.post("/api/klant-mapping/reject")
+def api_klant_mapping_reject(payload: dict = Body(...)):
+    try:
+        hiant = payload["hiant_klantref"]
+        earnie = payload["earnie_klantref"]
+    except KeyError as e:
+        return JSONResponse(status_code=400, content={"error": f"Missing: {e}"})
+    reject_klant_mapping(str(hiant), str(earnie))
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# uren_extern: CSV import + summary
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/uren-extern/summary")
+def api_uren_extern_summary():
+    return get_uren_extern_summary()
+
+
+@app.post("/admin/import-uren-extern")
+async def admin_import_uren_extern(file: UploadFile = File(...)):
+    """CSV-import: jaar;week;segment;uren (BE-decimal, semicolon)."""
+    import csv
+    import io
+    raw = await file.read()
+    if not raw:
+        return JSONResponse(status_code=400, content={"error": "leeg bestand"})
+    log.info("AUDIT: import-uren-extern gestart file=%s size=%d", file.filename, len(raw))
+    text = raw.decode("utf-8-sig", errors="replace")
+    # Detect delimiter: semicolon (BE) of komma
+    delim = ";" if text.count(";") > text.count(",") else ","
+    reader = csv.DictReader(io.StringIO(text), delimiter=delim)
+    rows = []
+    for r in reader:
+        # Accept zowel hoofd- als kleinletters voor headers
+        norm = {k.strip().lower(): v.strip() for k, v in r.items() if k}
+        uren_str = norm.get("uren", "").replace(".", "").replace(",", ".") \
+            if "," in norm.get("uren", "") else norm.get("uren", "")
+        try:
+            rows.append({
+                "jaar": int(norm.get("jaar", "")),
+                "week": int(norm.get("week", "")),
+                "segment": norm.get("segment", "").strip().lower(),
+                "uren": float(uren_str),
+            })
+        except (ValueError, TypeError):
+            continue
+    result = import_uren_extern(rows)
+    return {"status": "ok", **result}
 
 
 # ---------------------------------------------------------------------------
