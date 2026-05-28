@@ -75,6 +75,39 @@ KENGETAL_OMSCHRIJVING: dict[str, str] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# KLANT-id mapping (HIAnt ↔ Earnie/Prato)
+# ---------------------------------------------------------------------------
+#
+# Soms gebruikt HIAnt een andere klant-id dan Earnie/Prato voor DEZELFDE
+# klant — dan zou een naieve UNION twee aparte regels per maand opleveren.
+# We mappen historische klant-id naar de live klant-id (Earnie). Voor klanten
+# met identieke naam in beide systemen wordt deze automatisch bijgevuld in
+# init_schema(); hier overschrijf je manueel voor uitzonderingen.
+#
+# Format: "hiant_klantref" -> "earnie_klantref"
+
+KLANT_HIANT_TO_EARNIE: dict[str, str] = {
+    # bv. "23456": "464",  # HIAnt-id voor Smartmat -> Earnie 464
+}
+
+
+# ---------------------------------------------------------------------------
+# PERSOON-id mapping (HIAnt ↔ Earnie/Prato)
+# ---------------------------------------------------------------------------
+#
+# In HIAnt staat de naam ongeplitst in één veld ("Hessens Filip"), in Earnie
+# zijn voornaam en familienaam apart. Plus de persoonref verschilt vaak per
+# systeem. Deze tabel mapt historische persoonref naar de live persoonref.
+# Wordt aangevuld in init_schema() door auto-match op naam (woorden-overlap).
+#
+# Format: "hiant_persoonref" -> "earnie_persoonref"
+
+PERSOON_HIANT_TO_EARNIE: dict[str, str] = {
+    # bv. "3896": "2996",  # HIAnt 3896 (Hessens Filip) -> Earnie 2996 (Filip Hessens)
+}
+
+
 def kengetal_label(code: str | None) -> str:
     """Pretty-print een werknemerskengetal. Onbekende code -> code zelf."""
     if not code:

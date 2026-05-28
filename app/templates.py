@@ -170,8 +170,8 @@ h2{font-size:13px;margin:24px 0 10px;color:var(--muted);
 .modal-overlay.open{display:flex}
 .modal-overlay .backdrop{position:absolute;inset:0;background:rgba(15,23,42,.7);
   backdrop-filter:blur(4px)}
-.modal-content{position:relative;width:100%;max-width:1200px;height:80vh;max-height:800px;
-  background:#fff;border-radius:14px;padding:24px;
+.modal-content{position:relative;width:100%;max-width:1400px;height:95vh;max-height:1000px;
+  background:#fff;border-radius:14px;padding:24px 28px;
   display:flex;flex-direction:column;box-shadow:0 25px 50px -12px rgba(0,0,0,.5);z-index:1}
 .modal-content h3{margin:0 0 6px;font-size:22px;font-weight:800;
   padding-right:48px;letter-spacing:-.3px;color:var(--fg)}
@@ -396,11 +396,38 @@ window.fmtEur = (v) => v == null ? "—" :
   new Intl.NumberFormat("nl-BE", {{ style:"currency", currency:"EUR", maximumFractionDigits: 0 }}).format(v);
 window.fmtNum = (v, dec=2) => v == null ? "—" :
   new Intl.NumberFormat("nl-BE", {{ minimumFractionDigits: dec, maximumFractionDigits: dec }}).format(v);
+
+// Compact format voor datalabels — vermijdt drukke labels bij grote waarden.
+window.fmtCompactEur = (v) => {{
+  if (v == null) return "—";
+  const abs = Math.abs(v);
+  if (abs >= 1e6) return "€" + (v/1e6).toLocaleString("nl-BE",
+      {{maximumFractionDigits:2, minimumFractionDigits:1}}) + "M";
+  if (abs >= 1e3) return "€" + (v/1e3).toLocaleString("nl-BE",
+      {{maximumFractionDigits:0}}) + "k";
+  return "€" + v.toLocaleString("nl-BE", {{maximumFractionDigits:0}});
+}};
+window.fmtCompactNum = (v, suffix="") => {{
+  if (v == null) return "—";
+  const abs = Math.abs(v);
+  if (abs >= 1e6) return (v/1e6).toLocaleString("nl-BE",
+      {{maximumFractionDigits:2}}) + "M" + suffix;
+  if (abs >= 1e3) return (v/1e3).toLocaleString("nl-BE",
+      {{maximumFractionDigits:1}}) + "k" + suffix;
+  return v.toLocaleString("nl-BE", {{maximumFractionDigits:0}}) + suffix;
+}};
 window.unitFormatter = (unit) => {{
   if (unit === "EUR") return window.fmtEur;
   if (unit === "uur" || unit === "uur/pers") return (v) => window.fmtNum(v, 1) + " " + unit;
   if (unit === "%") return (v) => window.fmtNum(v, 2) + "%";
   return (v) => window.fmtNum(v, 0);
+}};
+// Compact-versie voor datalabels: kortere tekst per datapunt.
+window.unitFormatterCompact = (unit) => {{
+  if (unit === "EUR") return window.fmtCompactEur;
+  if (unit === "uur" || unit === "uur/pers") return (v) => window.fmtCompactNum(v, " " + unit);
+  if (unit === "%") return (v) => window.fmtNum(v, 1) + "%";
+  return (v) => window.fmtCompactNum(v);
 }};
 
 async function refreshFooter() {{
@@ -457,7 +484,9 @@ om er toe te voegen.</p></div>"""
 </div>"""
 
     pinned_json = json.dumps([{
-        "id": p["id"], "metric": p["metric"], "segment": p["segment"],
+        "id": p["id"], "titel": p["titel"],
+        "segment_label": p.get("segment_label", p["segment"]),
+        "metric": p["metric"], "segment": p["segment"],
         "chart_type": p["chart_type"], "grain": p["grain"],
         "period_mode": p["period_mode"],
         "period_value": p.get("period_value"),
@@ -650,10 +679,10 @@ function buildChartConfig(p, combined, seriesList, showDataLabels) {{
         }},
         datalabels: showDataLabels ? {{
           // Smart positioning:
-          //  - laatste punt -> label LINKS van het punt (anders valt het buiten canvas)
-          //  - eerste punt  -> label RECHTS van het punt
-          //  - omzet-serie (links axis) -> label BOVEN de lijn
-          //  - marge-serie (rechts axis) -> label ONDER de lijn (zo blijven series visueel apart)
+          //  - laatste punt -> label LINKS (anders valt het buiten canvas)
+          //  - eerste punt  -> label RECHTS
+          //  - omzet (links-as)   -> label BOVEN de lijn
+          //  - marge (rechts-as)  -> label ONDER de lijn (visueel apart)
           align: (ctx) => {{
             const n = ctx.dataset.data.length;
             if (ctx.dataIndex === n - 1) return "start";
@@ -661,14 +690,19 @@ function buildChartConfig(p, combined, seriesList, showDataLabels) {{
             return ctx.dataset.yAxisID === "y2" ? "bottom" : "top";
           }},
           anchor: "center",
-          offset: 6,
+          offset: 8,
           clip: false,
           backgroundColor: (ctx) => ctx.dataset.borderColor,
           color: "#fff",
           padding: {{ left: 5, right: 5, top: 2, bottom: 2 }},
           borderRadius: 4,
           font: {{ size: 10, weight: "700" }},
-          formatter: (v, ctx) => v == null ? "" : fmtFor(ctx.dataset)(v),
+          // Compact format (k/M) zodat datalabels niet te lang worden
+          formatter: (v, ctx) => {{
+            if (v == null) return "";
+            const compact = window.unitFormatterCompact(ctx.dataset._unit || "");
+            return compact(v);
+          }},
         }} : false
       }},
       scales
@@ -696,10 +730,8 @@ async function renderChart(p) {{
     if (totalPoints === 0) {{ showChartEmpty(id); return; }}
 
     const combined = combineSeries(seriesList, p.chart_type);
-    // Datalabels alleen tonen als de chart "klein" is (= ingebed). In modal
-    // tonen we ze ook, maar in de grid willen we ze niet bij heel veel punten.
-    const showLabels = combined.labels.length <= 14;
-    const cfg = buildChartConfig(p, combined, seriesList, showLabels);
+    // Datalabels ALTIJD tonen — bij veel datapunten worden ze compact (k/M).
+    const cfg = buildChartConfig(p, combined, seriesList, true);
 
     if (CHART_INSTANCES[id]) {{
       try {{ CHART_INSTANCES[id].destroy(); }} catch (e) {{}}
@@ -734,17 +766,31 @@ function openChartModal(id) {{
   const data = CHART_LAST_DATA[id];
   if (!data) return;
   const pinned = PINNED.find(x => x.id === id);
-  document.getElementById("modal-title").textContent = pinned ? pinned.titel : "";
-  document.getElementById("modal-meta").textContent =
-    (pinned && pinned.segment ? pinned.segment : "") + " · " +
-    (pinned && pinned.period_mode ? pinned.period_mode : "");
+  document.getElementById("modal-title").textContent =
+    (pinned && pinned.titel) ? pinned.titel : ("Grafiek #" + id);
+  const metaBits = [];
+  if (pinned && pinned.segment_label) metaBits.push(pinned.segment_label);
+  if (pinned && pinned.period_mode) {{
+    let per = pinned.period_mode;
+    if (pinned.period_value) per += ": " + pinned.period_value;
+    metaBits.push(per);
+  }}
+  document.getElementById("modal-meta").textContent = metaBits.join(" · ");
   const cfg = buildChartConfig(data.p, data.combined, data.seriesList, true);
-  // Modal-versie: grotere fonts + extra padding rondom canvas
+  // Modal-versie: grotere fonts + ruime padding zodat datalabels op
+  // randpunten niet door de Y-as worden afgekapt.
   cfg.options.plugins.legend.labels.font = {{ size: 14, weight: "600" }};
-  cfg.options.layout.padding = {{ left: 12, right: 36, top: 32, bottom: 8 }};
+  cfg.options.layout.padding = {{ left: 16, right: 60, top: 40, bottom: 12 }};
   if (cfg.options.plugins.datalabels) {{
-    cfg.options.plugins.datalabels.font = {{ size: 12, weight: "700" }};
-    cfg.options.plugins.datalabels.padding = {{ left: 7, right: 7, top: 3, bottom: 3 }};
+    cfg.options.plugins.datalabels.font = {{ size: 13, weight: "700" }};
+    cfg.options.plugins.datalabels.padding = {{ left: 8, right: 8, top: 4, bottom: 4 }};
+    cfg.options.plugins.datalabels.offset = 12;
+    // In modal: gebruik VOLLEDIG format (niet compact) — er is ruimte genoeg
+    cfg.options.plugins.datalabels.formatter = (v, ctx) => {{
+      if (v == null) return "";
+      const fmt = window.unitFormatter(ctx.dataset._unit || "");
+      return fmt(v);
+    }};
   }}
   document.getElementById("chart-modal").classList.add("open");
   if (MODAL_CHART) {{ try {{ MODAL_CHART.destroy(); }} catch (e) {{}} }}

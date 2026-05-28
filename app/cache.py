@@ -152,6 +152,17 @@ CREATE TABLE IF NOT EXISTS sektie_kengetal_map (
     omschrijving TEXT
 );
 
+-- klant_mapping: HIAnt klant-id -> Earnie klant-id.
+-- Wordt automatisch geseed op name-match + manueel overschreven vanuit
+-- mappings.KLANT_HIANT_TO_EARNIE.
+CREATE TABLE IF NOT EXISTS klant_mapping (
+    hiant_klantref TEXT PRIMARY KEY,
+    earnie_klantref TEXT NOT NULL,
+    canonical_naam TEXT,
+    source TEXT NOT NULL DEFAULT 'auto'   -- 'auto' (name-match) of 'manual'
+);
+CREATE INDEX IF NOT EXISTS idx_km_earnie ON klant_mapping(earnie_klantref);
+
 CREATE TABLE IF NOT EXISTS import_meta (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     bron TEXT NOT NULL,            -- 'historisch'
@@ -236,13 +247,27 @@ CREATE TABLE IF NOT EXISTS pinned_charts (
 """
 
 
+# Pin-titels die we automatisch opruimen bij elke startup omdat ze door
+# een nieuwere versie zijn vervangen. Voorkomt dat Mathieu handmatig moet
+# resetten.
+_OBSOLETE_PIN_TITLES = [
+    "Nestor — Omzet & Bruto marge LTM (rolling 12 mo)",   # vervangen door 'vanaf 2025-01'
+]
+
+
 def init_schema() -> None:
     """Maak tabellen + indexen aan als ze nog niet bestaan. Idempotent.
     Synchroniseert sektie_kengetal_map vanuit de hardcoded Python-mapping.
-    Migreert pinned_charts.series_json kolom als die nog niet bestaat."""
+    Migreert pinned_charts.series_json kolom als die nog niet bestaat.
+    Ruimt obsolete pin-titels automatisch op."""
     with cache_conn() as conn:
         conn.executescript(_SCHEMA)
         _ensure_column(conn, "pinned_charts", "series_json", "TEXT")
+        # Auto-cleanup van obsolete pins
+        for old_title in _OBSOLETE_PIN_TITLES:
+            cur = conn.execute("DELETE FROM pinned_charts WHERE titel = ?", (old_title,))
+            if cur.rowcount > 0:
+                log.info("Obsolete pin verwijderd: %s", old_title)
     _sync_sektie_mappings_from_code()
     log.info("Cache schema ready at %s", cache_db_path())
 
@@ -300,7 +325,9 @@ def sync_from_prato() -> dict[str, Any]:
     """
     # Lazy imports zodat circulaire imports vermeden worden + cache.py
     # blijft importeerbaar zonder fastapi/psycopg.
-    from .prato_export import _EXPORT_SQL, EXPORT_COLUMNS, _connect_long_running
+    # SYNC_COLUMNS = 22 kolommen die de margelijst-tabel kent (zonder 'bron',
+    # die wordt door v_margelijst toegevoegd als view-kolom).
+    from .prato_export import _EXPORT_SQL, SYNC_COLUMNS, _connect_long_running
 
     init_schema()
     started_at_iso = datetime.now(timezone.utc).isoformat()
@@ -324,8 +351,9 @@ def sync_from_prato() -> dict[str, Any]:
                 pg_cur.execute(_EXPORT_SQL)
                 cols = [d.name for d in pg_cur.description] if pg_cur.description else []
 
-                # Verify cols match expected
-                expected_set = set(EXPORT_COLUMNS)
+                # Verify cols match expected SYNC_COLUMNS (= 22 kolommen
+                # die de Prato-query oplevert; 'bron' is enkel view-kolom).
+                expected_set = set(SYNC_COLUMNS)
                 got_set = set(cols)
                 if got_set != expected_set:
                     missing = expected_set - got_set
@@ -334,11 +362,11 @@ def sync_from_prato() -> dict[str, Any]:
                         f"Kolom-mismatch — ontbrekend: {missing}, extra: {extra}"
                     )
 
-                col_idx = [cols.index(c) for c in EXPORT_COLUMNS]
-                placeholders = ",".join(["?"] * len(EXPORT_COLUMNS))
+                col_idx = [cols.index(c) for c in SYNC_COLUMNS]
+                placeholders = ",".join(["?"] * len(SYNC_COLUMNS))
                 insert_sql = (
                     "INSERT INTO margelijst ("
-                    + ",".join(EXPORT_COLUMNS)
+                    + ",".join(SYNC_COLUMNS)
                     + f") VALUES ({placeholders})"
                 )
 

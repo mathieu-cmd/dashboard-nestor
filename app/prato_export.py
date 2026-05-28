@@ -47,7 +47,9 @@ log = logging.getLogger("invoice-bundler.prato-export")
 # CSV header — EXACT in Mathieu's gevraagde volgorde
 # ---------------------------------------------------------------------------
 
-EXPORT_COLUMNS: tuple[str, ...] = (
+# SYNC_COLUMNS = de 22 kolommen die de Prato-query oplevert + die in de
+# margelijst-tabel staan. Wordt gebruikt door sync_from_prato().
+SYNC_COLUMNS: tuple[str, ...] = (
     "jaar", "kwartaal", "maand", "week",
     "vestigingseenheidreferentieid",
     "klantreferentieid", "klantnaam",
@@ -58,6 +60,10 @@ EXPORT_COLUMNS: tuple[str, ...] = (
     "kost", "verloonde_uren",
     "marge", "margeperuur",
 )
+
+# EXPORT_COLUMNS = SYNC_COLUMNS + extra 'bron'-kolom die v_margelijst toevoegt
+# (literal 'live' of 'historisch'). Gebruikt door read_cached + CSV-output.
+EXPORT_COLUMNS: tuple[str, ...] = SYNC_COLUMNS + ("bron",)
 
 
 # Filters die we accepteren als query-parameters.
