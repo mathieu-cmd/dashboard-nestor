@@ -571,6 +571,33 @@ function buildChartConfig(p, combined, seriesList, showDataLabels) {{
     scales.y2 = {{ type: "linear", position: "right",
                    ticks: {{ callback: (v) => fmtRight(v) }},
                    grid: {{ drawOnChartArea: false }} }};
+
+    // Dynamische schaling zodat de twee curves NIET over elkaar liggen.
+    // Omzet en marge volgen typisch dezelfde trend; default-padding zou
+    // ze in dezelfde band tonen. We dwingen de marge-as visueel naar
+    // onderaan door extra ruimte boven de marge-max te reserveren.
+    const leftVals = combined.datasets
+      .filter(ds => ds.yAxisID !== "y2")
+      .flatMap(ds => ds.data)
+      .filter(v => v != null && !isNaN(v));
+    const rightVals = combined.datasets
+      .filter(ds => ds.yAxisID === "y2")
+      .flatMap(ds => ds.data)
+      .filter(v => v != null && !isNaN(v));
+    if (leftVals.length && rightVals.length) {{
+      const lMin = Math.min(...leftVals), lMax = Math.max(...leftVals);
+      const rMin = Math.min(...rightVals), rMax = Math.max(...rightVals);
+      const lRange = (lMax - lMin) || Math.abs(lMax) || 1;
+      const rRange = (rMax - rMin) || Math.abs(rMax) || 1;
+      // Linker as (= omzet): klein paddinkje boven, lichte zoom-in onder
+      // (lift de omzet-curve visueel naar het bovenste deel van canvas).
+      scales.y.suggestedMin = Math.max(0, lMin - lRange * 0.2);
+      scales.y.suggestedMax = lMax + lRange * 0.10;
+      // Rechter as (= marge): GROTE padding boven (factor 2x), zodat de
+      // werkelijke datalijn fysiek in de onderste helft van canvas zit.
+      scales.y2.suggestedMin = Math.max(0, rMin - rRange * 0.30);
+      scales.y2.suggestedMax = rMax + rRange * 2.00;
+    }}
   }}
 
   return {{
