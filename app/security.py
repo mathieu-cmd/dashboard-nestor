@@ -84,7 +84,15 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
 
 _request_log: dict[str, list[float]] = defaultdict(list)
 _RL_WINDOW_SEC = 60
-_RL_MAX_REQ = 30  # 30 req per minuut per IP
+_RL_MAX_REQ = 300  # ruim genoeg voor een dashboard met 12+ async calls per page-load
+
+# Paden die NOOIT rate-limited worden (lichtgewicht of cruciaal).
+_RL_BYPASS_PATHS = ("/health",)
+_RL_BYPASS_PREFIXES = ("/api/",)
+
+# Paden die STRENGER rate-limited worden (zware queries / writes).
+_RL_STRICT_PATHS = {"/sync/run", "/admin/import-historisch"}
+_RL_STRICT_MAX_PER_MIN = 5
 
 
 def _client_ip(request: Request) -> str:
@@ -95,7 +103,11 @@ def _client_ip(request: Request) -> str:
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """30 requests per minuut per IP. Per-IP throttling, geen globale limiet."""
+    """Per-IP rate-limiting met drie zones:
+       - bypass:  /health en /api/*  (geen limit — interne UI-calls)
+       - strict:  /sync/run, /admin/import-*  (5 req/min — voorkomt misbruik)
+       - default: alle andere paden  (300 req/min)
+    """
 
     def __init__(self, app, window_sec: int = _RL_WINDOW_SEC, max_req: int = _RL_MAX_REQ):
         super().__init__(app)
@@ -103,8 +115,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self.max_req = max_req
 
     async def dispatch(self, request: Request, call_next):
-        # /health uitsluiten van rate-limit (Railway healthcheck)
-        if request.url.path == "/health":
+        path = request.url.path
+
+        # 1. Bypass-paden (geen limit)
+        if path in _RL_BYPASS_PATHS:
+            return await call_next(request)
+        if any(path.startswith(pref) for pref in _RL_BYPASS_PREFIXES):
             return await call_next(request)
 
         ip = _client_ip(request)
@@ -113,6 +129,18 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         recent = [t for t in _request_log[ip] if t > cutoff]
         _request_log[ip] = recent
 
+        # 2. Strict-paden (apart geteld om writes te beperken)
+        if path in _RL_STRICT_PATHS:
+            strict_recent = [t for t in recent[-_RL_STRICT_MAX_PER_MIN * 3:] if t > cutoff]
+            if len(strict_recent) >= _RL_STRICT_MAX_PER_MIN:
+                log.warning("Strict rate-limit hit voor %s op %s", ip, path)
+                return Response(
+                    f"Rate limit voor {path} overschreden — max {_RL_STRICT_MAX_PER_MIN} per minuut.",
+                    status_code=429,
+                    headers={"Retry-After": str(self.window)},
+                )
+
+        # 3. Default-limit
         if len(recent) >= self.max_req:
             log.warning("Rate-limit hit voor %s (%d req in laatste %ds)", ip, len(recent), self.window)
             return Response(
