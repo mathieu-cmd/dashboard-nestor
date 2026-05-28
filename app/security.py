@@ -24,8 +24,10 @@ log = logging.getLogger("dashboard-nestor.security")
 
 _CSP_DIRECTIVES = (
     "default-src 'self'; "
-    "script-src 'self' 'unsafe-inline'; "
-    "style-src 'self' 'unsafe-inline'; "
+    # Chart.js + Tom-Select worden van jsdelivr geladen — moet expliciet
+    # in script-src en style-src staan, anders blokkeert CSP ze.
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
     "img-src 'self' data:; "
     "font-src 'self' data:; "
     "connect-src 'self'; "
