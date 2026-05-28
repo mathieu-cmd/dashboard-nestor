@@ -298,7 +298,35 @@ def init_schema() -> None:
     _sync_sektie_mappings_from_code()
     _sync_klant_mapping_from_code()
     _auto_seed_klant_mapping()
+    _seed_uren_extern_from_code()
     log.info("Cache schema ready at %s", cache_db_path())
+
+
+def _seed_uren_extern_from_code() -> None:
+    """Laad UREN_EXTERN_HARDCODED in de uren_extern tabel.
+
+    Strategie: TRUNCATE + bulk INSERT. De tabel is bedoeld als een
+    'externe waarheid' die alleen via code wijzigt — niet via UI.
+    Voor weken waar Earnie data heeft, prevaleert Earnie (zie
+    metrics.uren_per_week_with_extern_fallback)."""
+    from .uren_extern_data import UREN_EXTERN_HARDCODED
+    rows = [
+        (int(j), int(w), str(s).strip().lower(), float(u))
+        for (j, w, s, u) in UREN_EXTERN_HARDCODED
+    ]
+    with cache_conn() as conn:
+        conn.execute("BEGIN")
+        try:
+            conn.execute("DELETE FROM uren_extern")
+            conn.executemany(
+                "INSERT INTO uren_extern (jaar, week, segment, uren) VALUES (?, ?, ?, ?)",
+                rows,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    log.info("uren_extern: %d hardcoded rijen geladen uit uren_extern_data.py", len(rows))
 
 
 def _ensure_column(conn: Any, table: str, col: str, ddl_type: str) -> None:

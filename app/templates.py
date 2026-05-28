@@ -611,35 +611,12 @@ function combineSeries(seriesList, chart_type) {{
   return {{ labels, datasets }};
 }}
 
-// Deterministische label-sampler: zorgt dat labels NOOIT overlappen.
-// Strategie:
-//  - eerste en laatste datapunt ALTIJD tonen
-//  - tussenliggende labels: evenredig verdeeld, max N per dataset
-//  - per dataset offset zodat twee series op DIFFERENT indexen tonen
-//    -> labels van series A en B vallen nooit op dezelfde x-positie
-function makeLabelDisplay(maxLabels) {{
-  return (ctx) => {{
-    const n = ctx.dataset.data.length;
-    if (n <= 2) return true;
-    // dataset-index in de chart (0 = eerste series, 1 = tweede, ...)
-    const dsIdx = ctx.datasetIndex || 0;
-    // Hoeveel labels deze series mag tonen (incl. eerste/laatste)
-    const want = Math.min(n, Math.max(2, maxLabels));
-    if (want >= n) return true;
-    // Eerste & laatste ALTIJD
-    if (ctx.dataIndex === 0 || ctx.dataIndex === n - 1) return true;
-    // Step zo gekozen dat we ~want labels tonen
-    const step = (n - 1) / (want - 1);
-    // Offset per dataset: tweede series schuift een halve step op,
-    // zodat labels van series A en series B NIET op dezelfde x staan.
-    const offset = (dsIdx * step) / 2;
-    // Zit dit datapunt op een sample-positie?
-    for (let k = 1; k < want - 1; k++) {{
-      const target = Math.round(k * step + offset);
-      if (target === ctx.dataIndex) return true;
-    }}
-    return false;
-  }};
+// Label-rotatie: bij veel datapunten plaatsen we labels verticaal,
+// dan past elk label gegarandeerd naast het volgende.
+//   - n <= 8  : horizontaal (rotation 0)
+//   - n  > 8  : verticaal   (rotation -90)
+function labelRotationFor(n) {{
+  return n > 8 ? -90 : 0;
 }}
 
 function buildChartConfig(p, combined, seriesList, showDataLabels, isModal) {{
@@ -695,9 +672,9 @@ function buildChartConfig(p, combined, seriesList, showDataLabels, isModal) {{
     options: {{
       responsive: true, maintainAspectRatio: false,
       interaction: {{ mode: "index", intersect: false }},
-      // Extra padding zodat datalabels op de meest-rechtse en bovenste
+      // Extra padding zodat verticale datalabels op de bovenste/onderste
       // punten niet door de as-rand worden afgekapt.
-      layout: {{ padding: {{ left: 4, right: 20, top: 24, bottom: 4 }} }},
+      layout: {{ padding: {{ left: 4, right: 20, top: 48, bottom: 28 }} }},
       plugins: {{
         legend: {{ display: combined.datasets.length > 1, position: "top",
                    align: "center",
@@ -709,28 +686,26 @@ function buildChartConfig(p, combined, seriesList, showDataLabels, isModal) {{
           }}
         }},
         datalabels: showDataLabels ? {{
-          // Deterministische sampling i.p.v. 'auto' — voorkomt dat labels
-          // elkaar overschrijven én dat ze willekeurig verdwijnen.
-          display: makeLabelDisplay(isModal ? 14 : 7),
-          // Smart positioning per dataset:
-          //  - laatste punt -> label LINKS (anders valt het buiten canvas)
-          //  - eerste punt  -> label RECHTS
-          //  - omzet (links-as)   -> label BOVEN de lijn
-          //  - marge (rechts-as)  -> label ONDER de lijn (visueel apart)
-          align: (ctx) => {{
-            const n = ctx.dataset.data.length;
-            if (ctx.dataIndex === n - 1) return "start";
-            if (ctx.dataIndex === 0) return "end";
-            return ctx.dataset.yAxisID === "y2" ? "bottom" : "top";
-          }},
+          // ALLE labels tonen — bij veel datapunten roteren we naar verticaal
+          // zodat elk label gegarandeerd naast het volgende past.
+          display: true,
+          rotation: (ctx) => labelRotationFor(ctx.dataset.data.length),
+          // omzet (links-as)  -> BOVEN het punt
+          // marge (rechts-as) -> ONDER het punt
+          // Zo overlappen de twee series elkaar nooit op dezelfde x.
+          align: (ctx) => ctx.dataset.yAxisID === "y2" ? "bottom" : "top",
           anchor: "center",
-          offset: 10,
+          offset: 6,
           clip: false,
-          backgroundColor: (ctx) => ctx.dataset.borderColor,
-          color: "#fff",
-          padding: {{ left: 5, right: 5, top: 2, bottom: 2 }},
-          borderRadius: 4,
-          font: {{ size: 10, weight: "700" }},
+          // Semi-transparante witte achtergrond zorgt voor leesbaarheid
+          // over de lijnen heen, zonder de chart te overheersen.
+          backgroundColor: "rgba(255,255,255,0.78)",
+          borderColor: (ctx) => ctx.dataset.borderColor,
+          borderWidth: 1,
+          color: (ctx) => ctx.dataset.borderColor,
+          padding: {{ left: 3, right: 3, top: 1, bottom: 1 }},
+          borderRadius: 3,
+          font: {{ size: 9, weight: "700" }},
           // Compact format (k/M) zodat datalabels niet te lang worden
           formatter: (v, ctx) => {{
             if (v == null) return "";
@@ -814,14 +789,15 @@ function openChartModal(id) {{
   // Modal-versie: grotere fonts + ruime padding zodat datalabels op
   // randpunten niet door de Y-as worden afgekapt.
   cfg.options.plugins.legend.labels.font = {{ size: 14, weight: "600" }};
-  cfg.options.layout.padding = {{ left: 16, right: 60, top: 40, bottom: 12 }};
+  cfg.options.layout.padding = {{ left: 16, right: 60, top: 60, bottom: 40 }};
   if (cfg.options.plugins.datalabels) {{
-    cfg.options.plugins.datalabels.font = {{ size: 13, weight: "700" }};
-    cfg.options.plugins.datalabels.padding = {{ left: 8, right: 8, top: 4, bottom: 4 }};
-    cfg.options.plugins.datalabels.offset = 14;
-    // Display blijft sampler (makeLabelDisplay met max=14) — voorkomt
-    // overlap. Formatter wordt volledig (geen 'k'-suffix) want er is
-    // ruimte genoeg in de modal.
+    cfg.options.plugins.datalabels.font = {{ size: 11, weight: "700" }};
+    cfg.options.plugins.datalabels.padding = {{ left: 5, right: 5, top: 2, bottom: 2 }};
+    cfg.options.plugins.datalabels.offset = 10;
+    // Modal: alle labels horizontaal — er is ruimte genoeg en de Y-as
+    // padding boven het hoogste punt zorgt voor lucht. Override rotation.
+    cfg.options.plugins.datalabels.rotation = (ctx) => ctx.dataset.data.length > 18 ? -90 : 0;
+    // Volledig format (zonder k-suffix) want er is ruimte in modal.
     cfg.options.plugins.datalabels.formatter = (v, ctx) => {{
       if (v == null) return "";
       const fmt = window.unitFormatter(ctx.dataset._unit || "");
@@ -1055,12 +1031,18 @@ def export_body() -> str:
     </div>
     <div class="actions">
       <button type="submit" class="primary">Download CSV</button>
+      <button type="button" id="btn-preview">Preview (50 rijen)</button>
       <button type="reset" id="btn-reset">Wissen</button>
     </div>
   </div>
 </form>
 
 <small>22 kolommen — UTF-8 zonder BOM, semicolon, Belgische decimaalkomma.</small>
+
+<div id="preview-wrap" class="panel" style="display:none;margin-top:18px;overflow:auto;max-height:60vh">
+  <div id="preview-meta" style="font-size:13px;margin-bottom:10px;color:var(--muted)"></div>
+  <div id="preview-table"></div>
+</div>
 
 <script>
 // Wikkel alle Tom-Select init in DOMContentLoaded zodat we niet runnen
@@ -1127,24 +1109,67 @@ def export_body() -> str:
       })
       .catch(e => console.warn("vestiging-options laden mislukt", e));
 
-    // Submit-handler: bouw multi-value URL en navigeer
-    document.getElementById("export-form").addEventListener("submit", function(e) {
-      e.preventDefault();
+    // Bouw filter-params op basis van huidige Tom-Select selecties
+    function buildParams() {
       const params = new URLSearchParams();
-      const f = e.target;
       [tsJaar, tsKw, tsMnd, tsWk, tsVest, tsKlant].forEach(ts => {
         const name = ts.input.name;
         ts.getValue().forEach(v => params.append(name, v));
       });
       tsPersoon.getValue().forEach(v => params.append("persoonreferentieid", v));
-      const klantnaam = f.elements["klantnaam"].value.trim();
+      const klantnaam = document.querySelector('#export-form input[name="klantnaam"]').value.trim();
       if (klantnaam) params.append("klantnaam", klantnaam);
-      window.location.href = "/prato/export.csv?" + params.toString();
+      return params;
+    }
+
+    // Submit-handler: download CSV met dezelfde filters
+    document.getElementById("export-form").addEventListener("submit", function(e) {
+      e.preventDefault();
+      window.location.href = "/prato/export.csv?" + buildParams().toString();
+    });
+
+    // Preview-handler: haal eerste 50 rijen op en toon als tabel
+    document.getElementById("btn-preview").addEventListener("click", async () => {
+      const btn = document.getElementById("btn-preview");
+      const wrap = document.getElementById("preview-wrap");
+      const meta = document.getElementById("preview-meta");
+      const tbl  = document.getElementById("preview-table");
+      btn.disabled = true; const oldText = btn.textContent;
+      btn.textContent = "Bezig…";
+      wrap.style.display = "block";
+      tbl.innerHTML = "<small>laden…</small>";
+      meta.textContent = "";
+      try {
+        const params = buildParams();
+        params.append("limit", "50");
+        const r = await fetch("/api/preview?" + params.toString());
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const d = await r.json();
+        const cols = d.columns || [];
+        const rows = d.rows || [];
+        if (!rows.length) {
+          tbl.innerHTML = '<small style="color:var(--muted)">Geen rijen voor deze filters.</small>';
+          meta.textContent = "0 rijen gescand.";
+          return;
+        }
+        const thead = "<thead><tr>" + cols.map(c => "<th style=\"text-align:left;padding:4px 8px;border-bottom:1px solid #ddd;font-size:11px;white-space:nowrap\">" + c + "</th>").join("") + "</tr></thead>";
+        const tbody = "<tbody>" + rows.map(r =>
+          "<tr>" + r.map(v => "<td style=\"padding:3px 8px;border-bottom:1px solid #f0f0f0;font-size:12px;white-space:nowrap\">" + (v == null ? "" : String(v)) + "</td>").join("") + "</tr>"
+        ).join("") + "</tbody>";
+        tbl.innerHTML = "<table style=\"border-collapse:collapse;width:max-content;min-width:100%\">" + thead + tbody + "</table>";
+        const trunc = d.truncated_scan ? " (eerste 5000 — scan beperkt)" : "";
+        meta.textContent = "Preview: " + d.shown + " van " + d.scanned + " rijen" + trunc + ". Download voor de volledige export.";
+      } catch (err) {
+        tbl.innerHTML = '<small style="color:var(--err)">Fout: ' + err.message + '</small>';
+      } finally {
+        btn.disabled = false; btn.textContent = oldText;
+      }
     });
 
     document.getElementById("btn-reset").addEventListener("click", () => {
       setTimeout(() => {
         [tsJaar, tsKw, tsMnd, tsWk, tsVest, tsKlant, tsPersoon].forEach(ts => ts.clear());
+        document.getElementById("preview-wrap").style.display = "none";
       }, 10);
     });
   }
@@ -1236,19 +1261,13 @@ def admin_body(historisch_summary: dict[str, Any]) -> str:
 <h2>Uren per week — extern aangeleverd</h2>
 <div class="panel">
   <p style="margin:0 0 10px;color:var(--muted);font-size:13px">
-    Eenmalige CSV-import voor de Nestor Core + Smartmat uren per week
-    (historie tot maart 2026 — voor de live periode vanaf april 2026 gebruiken
-    we Prato-data).
-    Format: <code>jaar;week;segment;uren</code> · UTF-8 · semicolon · Belgische komma.
-    Segment-waarden: <code>nestor_core</code> of <code>smartmat</code>.
+    De extern aangeleverde uren (Nestor Core, Smartmat, VAB) zijn nu
+    <strong>hardcoded</strong> in <code>app/uren_extern_data.py</code> en
+    worden bij elke app-start ingeladen. Wijzigen = code aanpassen + redeploy.<br>
+    Voor weken waar Earnie data heeft, <strong>prevaleert Earnie</strong>
+    automatisch over de hardcoded waarde.
   </p>
-  <form id="uren-import-form" enctype="multipart/form-data">
-    <input type="file" id="uren-file" name="file" accept=".csv,text/csv" required>
-    <div class="actions">
-      <button type="submit" class="primary" id="uren-import-btn">Importeren (overschrijft)</button>
-      <small id="uren-import-status" style="align-self:center"></small>
-    </div>
-  </form>
+  <div id="uren-summary" style="font-size:13px"><small>laden…</small></div>
 </div>
 
 <h2>Verwarrende klanten — koppelen of negeren</h2>
@@ -1273,27 +1292,24 @@ def admin_body(historisch_summary: dict[str, Any]) -> str:
   </div>
 </div>
 <script>
-// Uren-import
-document.getElementById("uren-import-form").addEventListener("submit", async (e) => {{
-  e.preventDefault();
-  const file = document.getElementById("uren-file").files[0];
-  if (!file) return;
-  const btn = document.getElementById("uren-import-btn");
-  const stat = document.getElementById("uren-import-status");
-  btn.disabled = true; stat.textContent = "Bezig…";
-  const fd = new FormData(); fd.append("file", file);
+// Uren-samenvatting (read-only) — laat zien hoeveel rijen actief zijn
+(async () => {{
+  const wrap = document.getElementById("uren-summary");
   try {{
-    const r = await fetch("/admin/import-uren-extern", {{method:"POST", body:fd}});
+    const r = await fetch("/api/uren-extern/summary");
     const d = await r.json();
-    if (r.ok && d.status === "ok") {{
-      stat.innerHTML = `<span class="ok">${{d.rows_loaded}} rijen geladen.</span>`;
-    }} else {{
-      stat.innerHTML = `<span class="err">Fout: ${{d.error || r.status}}</span>`;
-    }}
+    const periode = (d.periode_van && d.periode_tot)
+      ? `${{Math.floor(d.periode_van/100)}}-W${{String(d.periode_van%100).padStart(2,'0')}}
+         t/m ${{Math.floor(d.periode_tot/100)}}-W${{String(d.periode_tot%100).padStart(2,'0')}}`
+      : "—";
+    const segs = (d.segments || []).join(", ") || "—";
+    wrap.innerHTML = `<strong>${{d.rows}}</strong> rijen actief
+      · segmenten: <code>${{segs}}</code>
+      · periode: <code>${{periode}}</code>`;
   }} catch (err) {{
-    stat.innerHTML = `<span class="err">${{err}}</span>`;
-  }} finally {{ btn.disabled = false; }}
-}});
+    wrap.innerHTML = `<span class="err">${{err}}</span>`;
+  }}
+}})();
 
 // Verwarrende klanten
 async function loadDuplicates() {{

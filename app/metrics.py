@@ -388,16 +388,45 @@ def uren_extern_per_week(
     period_mode: str = "all",
     period_value: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Lees uren_extern voor één segment. Levert week-grain time-series."""
+    """Lees gepresteerde uren per week voor één segment.
+
+    Earnie (margelijst.gepresteerde_uren) prevaleert: voor weken waar
+    Earnie data heeft, gebruiken we die. Voor weken zonder Earnie-data
+    vallen we terug op de hardcoded `uren_extern` tabel (Sheets-bron).
+    """
     per_w, per_p = _period_filter_uren_extern(period_mode, period_value)
+    seg_w, seg_p = segment_where(segment)
+    # Earnie-uren per (jaar, week), gefilterd op segment-clause op de
+    # margelijst-tabel (live data). v_margelijst zou kunnen, maar de
+    # historische rijen hebben week=NULL, dus zijn intrinsiek geen match.
     sql = f"""
+        WITH earnie AS (
+            SELECT jaar, week, SUM(COALESCE(gepresteerde_uren, 0)) AS uren
+            FROM margelijst
+            WHERE week IS NOT NULL
+              AND ({seg_w})
+            GROUP BY jaar, week
+            HAVING SUM(COALESCE(gepresteerde_uren, 0)) > 0
+        ),
+        extern AS (
+            SELECT jaar, week, uren FROM uren_extern WHERE segment = ?
+        ),
+        combined AS (
+            SELECT jaar, week, uren, 'earnie' AS bron FROM earnie
+            UNION ALL
+            SELECT e.jaar, e.week, e.uren, 'extern' AS bron
+            FROM extern e
+            LEFT JOIN earnie ea ON ea.jaar = e.jaar AND ea.week = e.week
+            WHERE ea.jaar IS NULL
+        )
         SELECT jaar || '-W' || printf('%02d', week) AS lbl, uren
-        FROM uren_extern
-        WHERE segment = ? AND ({per_w})
+        FROM combined
+        WHERE ({per_w})
         ORDER BY jaar, week
     """
+    params = list(seg_p) + [segment] + list(per_p)
     with cache_conn() as conn:
-        rows = conn.execute(sql, [segment] + per_p).fetchall()
+        rows = conn.execute(sql, params).fetchall()
     return {
         "labels": [r[0] for r in rows],
         "values": [_to_number(r[1]) for r in rows],

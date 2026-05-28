@@ -48,7 +48,6 @@ from .cache import (
     get_last_sync,
     get_row_count,
     get_uren_extern_summary,
-    import_uren_extern,
     init_schema,
     list_pinned_charts,
     reject_klant_mapping,
@@ -414,36 +413,10 @@ def api_uren_extern_summary():
     return get_uren_extern_summary()
 
 
-@app.post("/admin/import-uren-extern")
-async def admin_import_uren_extern(file: UploadFile = File(...)):
-    """CSV-import: jaar;week;segment;uren (BE-decimal, semicolon)."""
-    import csv
-    import io
-    raw = await file.read()
-    if not raw:
-        return JSONResponse(status_code=400, content={"error": "leeg bestand"})
-    log.info("AUDIT: import-uren-extern gestart file=%s size=%d", file.filename, len(raw))
-    text = raw.decode("utf-8-sig", errors="replace")
-    # Detect delimiter: semicolon (BE) of komma
-    delim = ";" if text.count(";") > text.count(",") else ","
-    reader = csv.DictReader(io.StringIO(text), delimiter=delim)
-    rows = []
-    for r in reader:
-        # Accept zowel hoofd- als kleinletters voor headers
-        norm = {k.strip().lower(): v.strip() for k, v in r.items() if k}
-        uren_str = norm.get("uren", "").replace(".", "").replace(",", ".") \
-            if "," in norm.get("uren", "") else norm.get("uren", "")
-        try:
-            rows.append({
-                "jaar": int(norm.get("jaar", "")),
-                "week": int(norm.get("week", "")),
-                "segment": norm.get("segment", "").strip().lower(),
-                "uren": float(uren_str),
-            })
-        except (ValueError, TypeError):
-            continue
-    result = import_uren_extern(rows)
-    return {"status": "ok", **result}
+# NB: /admin/import-uren-extern is verwijderd in v1.0.1 — de uren_extern
+# tabel wordt nu bij elke app-start geseed vanuit app/uren_extern_data.py.
+# Wijzigen = code aanpassen + redeploy. Voor de overlappende weken waar
+# Earnie data heeft, prevaleert Earnie automatisch (zie metrics.py).
 
 
 # ---------------------------------------------------------------------------
@@ -629,6 +602,61 @@ def prato_export_diag():
                 "message": str(e)[:500],
             },
         )
+
+
+@app.get("/api/preview")
+def api_preview(
+    request: Request,
+    jaar: list[int] = Query(default=[]),
+    kwartaal: list[int] = Query(default=[]),
+    maand: list[int] = Query(default=[]),
+    week: list[int] = Query(default=[]),
+    vestigingseenheidreferentieid: list[str] = Query(default=[]),
+    klantreferentieid: list[str] = Query(default=[]),
+    persoonreferentieid: list[str] = Query(default=[]),
+    klantnaam: Optional[str] = None,
+    familienaam: Optional[str] = None,
+    voornaam: Optional[str] = None,
+    limit: int = 50,
+):
+    """Preview voor /export: zelfde filters, maar JSON i.p.v. CSV-download.
+
+    Geeft de eerste `limit` rijen (max 200) terug zodat de gebruiker
+    kan checken of de filters kloppen vóór de echte download."""
+    from .cache import read_cached
+    from .prato_export import EXPORT_COLUMNS
+    filters = {
+        "jaar": jaar,
+        "kwartaal": kwartaal,
+        "maand": maand,
+        "week": week,
+        "vestigingseenheidreferentieid": vestigingseenheidreferentieid,
+        "klantreferentieid": klantreferentieid,
+        "persoonreferentieid": persoonreferentieid,
+        "klantnaam": klantnaam,
+        "familienaam": familienaam,
+        "voornaam": voornaam,
+    }
+    n = max(1, min(int(limit), 200))
+    rows: list[list[Any]] = []
+    total_seen = 0
+    for row in read_cached(filters):
+        total_seen += 1
+        if len(rows) < n:
+            # Converteer naar JSON-serialiseerbaar (Decimal -> str)
+            rows.append([
+                (str(v) if hasattr(v, "as_tuple") else v) for v in row
+            ])
+        if total_seen >= 5000:
+            # safety brake — preview moet snel zijn
+            break
+    return {
+        "columns": list(EXPORT_COLUMNS),
+        "rows": rows,
+        "shown": len(rows),
+        "scanned": total_seen,
+        "truncated_scan": total_seen >= 5000,
+    }
 
 
 @app.get("/prato/export.csv")
