@@ -237,10 +237,31 @@ CREATE TABLE IF NOT EXISTS pinned_charts (
 
 
 def init_schema() -> None:
-    """Maak tabellen + indexen aan als ze nog niet bestaan. Idempotent."""
+    """Maak tabellen + indexen aan als ze nog niet bestaan. Idempotent.
+    Synchroniseert sektie_kengetal_map vanuit de hardcoded Python-mapping."""
     with cache_conn() as conn:
         conn.executescript(_SCHEMA)
+    _sync_sektie_mappings_from_code()
     log.info("Cache schema ready at %s", cache_db_path())
+
+
+def _sync_sektie_mappings_from_code() -> None:
+    """Vul sektie_kengetal_map vanuit app.mappings.SEKTIE_KENGETAL."""
+    from .mappings import SEKTIE_KENGETAL, SEKTIE_OMSCHRIJVING
+    with cache_conn() as conn:
+        conn.execute("BEGIN")
+        try:
+            conn.execute("DELETE FROM sektie_kengetal_map")
+            for sektie, kengetal in SEKTIE_KENGETAL.items():
+                conn.execute(
+                    "INSERT INTO sektie_kengetal_map (sektie_origineel, werknemerskengetal, omschrijving) "
+                    "VALUES (?, ?, ?)",
+                    (sektie, kengetal, SEKTIE_OMSCHRIJVING.get(sektie)),
+                )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
 
 # ---------------------------------------------------------------------------

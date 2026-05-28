@@ -67,6 +67,18 @@ def _period_filter(period_mode: str, period_value: Optional[str] = None) -> tupl
             raise ValueError("period_value vereist bij period_mode='year'")
         return "jaar = ?", [int(period_value)]
 
+    if period_mode == "range":
+        # period_value-formaat: "YYYY-MM..YYYY-MM" (inclusive aan beide kanten)
+        if not period_value or ".." not in period_value:
+            raise ValueError("period_value moet 'YYYY-MM..YYYY-MM' zijn bij period_mode='range'")
+        start_str, end_str = period_value.split("..", 1)
+        try:
+            sy, sm = int(start_str[:4]), int(start_str[5:7])
+            ey, em = int(end_str[:4]), int(end_str[5:7])
+        except (ValueError, IndexError):
+            raise ValueError("period_value moet 'YYYY-MM..YYYY-MM' zijn (bv. '2024-01..2025-06')")
+        return "(jaar*100 + maand) BETWEEN ? AND ?", [sy * 100 + sm, ey * 100 + em]
+
     raise ValueError(f"Onbekende period_mode: {period_mode}")
 
 

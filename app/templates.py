@@ -28,6 +28,17 @@ body{font-family:-apple-system,"Segoe UI",system-ui,sans-serif;font-size:14px;
   color:var(--fg);background:var(--bg);min-height:100vh;
   display:grid;grid-template-columns:240px 1fr;grid-template-rows:1fr;}
 
+/* Mobile top-bar (alleen zichtbaar op smal scherm) */
+.mobile-bar{display:none;background:var(--sidebar-bg);color:#fff;
+  padding:12px 16px;align-items:center;gap:12px;
+  position:sticky;top:0;z-index:30;}
+.mobile-bar .ham{font-size:22px;background:none;border:none;color:#fff;
+  cursor:pointer;padding:4px 8px;border-radius:6px}
+.mobile-bar .ham:hover{background:#1e293b}
+.mobile-bar .title{font-weight:700;font-size:15px}
+.sidebar-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);
+  z-index:39}
+
 /* Sidebar */
 .sidebar{background:var(--sidebar-bg);color:var(--sidebar-fg);
   padding:24px 16px;display:flex;flex-direction:column;gap:8px;
@@ -51,7 +62,39 @@ body{font-family:-apple-system,"Segoe UI",system-ui,sans-serif;font-size:14px;
 .sidebar .footer .err{color:#f87171}
 
 /* Main */
-main{padding:24px 28px;overflow-x:hidden;}
+main{padding:24px 28px;overflow-x:hidden;min-width:0;}
+
+/* Mobile breakpoint */
+@media (max-width: 760px) {
+  body { grid-template-columns: 1fr; }
+  .mobile-bar { display: flex; }
+  .sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0;
+    width: 260px; max-width: 80vw; z-index: 40;
+    transform: translateX(-100%); transition: transform .2s;
+    box-shadow: 2px 0 12px rgba(0,0,0,.3);
+  }
+  body.sidebar-open .sidebar { transform: translateX(0); }
+  body.sidebar-open .sidebar-backdrop { display: block; }
+  main { padding: 16px; }
+  h1 { font-size: 18px; }
+  .toolbar { gap: 8px; }
+  .toolbar select { font-size: 12px; padding: 5px 8px; }
+  .kpi-row { grid-template-columns: 1fr; gap: 10px; margin-bottom: 16px; }
+  .kpi .val { font-size: 22px; }
+  .charts-grid { grid-template-columns: 1fr; gap: 12px; }
+  .chart-card { padding: 12px; }
+  .chart-card .canvas-wrap { height: 220px; }
+  .chart-card canvas { max-height: 220px !important; }
+  #db-sync-bar, #ex-sync-bar { gap: 12px !important; padding: 12px !important; }
+  #db-sync-bar button, #ex-sync-bar button { width: 100% !important; }
+  .panel { padding: 12px; }
+  .grid2 { grid-template-columns: 1fr; gap: 10px; }
+  .status-row { gap: 12px; }
+  .status-row > div { min-width: 100px; }
+  .actions { gap: 8px; }
+  .actions button { flex: 1; }
+}
 h1{font-size:22px;margin:0 0 4px;font-weight:700;letter-spacing:-.3px}
 .subtitle{color:var(--muted);font-size:13px;margin:0 0 24px}
 h2{font-size:13px;margin:24px 0 10px;color:var(--muted);
@@ -146,6 +189,81 @@ code{background:#f1f5f9;padding:1px 6px;border-radius:4px;font-size:12px;
 """
 
 
+def sync_bar_html(prefix: str = "db") -> str:
+    """Gedeelde sync-bar component — bovenaan dashboards EN export.
+
+    `prefix` zorgt voor unieke element-ID's wanneer de bar twee keer op
+    dezelfde pagina zou voorkomen (niet nu, maar veilig)."""
+    return f"""
+<div class="panel" id="{prefix}-sync-bar"
+     style="display:flex;align-items:center;gap:18px;flex-wrap:wrap;justify-content:space-between">
+  <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
+    <div>
+      <div style="color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px">Laatste sync</div>
+      <div id="{prefix}-last-sync" style="font-size:14px;font-weight:600;margin-top:2px">…</div>
+    </div>
+    <div>
+      <div style="color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px">Status</div>
+      <div id="{prefix}-sync-status" style="font-size:14px;font-weight:600;margin-top:2px">…</div>
+    </div>
+    <div>
+      <div style="color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px">Rijen totaal</div>
+      <div id="{prefix}-rows" style="font-size:14px;font-weight:600;margin-top:2px">…</div>
+    </div>
+    <div>
+      <div style="color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px">Auto-sync</div>
+      <div style="font-size:14px;font-weight:600;margin-top:2px">dagelijks 11:59</div>
+    </div>
+  </div>
+  <button class="primary" id="{prefix}-sync-btn"
+          style="font-size:14px;padding:10px 20px;box-shadow:0 2px 8px rgba(79,70,229,.35)">
+    ↻ Sync Prato nu
+  </button>
+</div>
+
+<script>
+(function() {{
+  const prefix = "{prefix}";
+  async function refresh() {{
+    try {{
+      const r = await fetch("/api/status");
+      const d = await r.json();
+      document.getElementById(prefix + "-rows").textContent =
+        (d.rows_cached || 0).toLocaleString("nl-BE");
+      const last = d.last_sync;
+      if (last) {{
+        document.getElementById(prefix + "-last-sync").textContent =
+          new Date(last.started_at).toLocaleString("nl-BE");
+        const st = document.getElementById(prefix + "-sync-status");
+        st.textContent = last.status;
+        st.style.color =
+          last.status === "ok" ? "var(--ok)" :
+          last.status === "failed" ? "var(--err)" : "var(--warn)";
+      }} else {{
+        document.getElementById(prefix + "-last-sync").textContent = "—";
+        document.getElementById(prefix + "-sync-status").textContent = "—";
+      }}
+    }} catch (e) {{}}
+  }}
+  document.getElementById(prefix + "-sync-btn").addEventListener("click", async function() {{
+    const btn = this; btn.disabled = true;
+    const orig = btn.textContent; btn.textContent = "Sync gepland…";
+    try {{
+      const r = await fetch("/sync/run", {{method: "POST"}});
+      const d = await r.json();
+      if (!r.ok) alert("Sync fout: " + (d.error || r.status));
+    }} catch (e) {{ alert("Sync fout: " + e); }}
+    finally {{ setTimeout(() => {{
+      btn.disabled = false; btn.textContent = orig; refresh();
+    }}, 2000); }}
+  }});
+  refresh();
+  setInterval(refresh, 10000);
+}})();
+</script>
+"""
+
+
 def _icon(name: str) -> str:
     return {
         "dashboards": "📊",
@@ -176,6 +294,10 @@ def shell(title: str, active: str, body: str) -> str:
 <style>{_CSS}</style>
 </head>
 <body>
+<div class="mobile-bar">
+  <button class="ham" onclick="document.body.classList.toggle('sidebar-open')" aria-label="Menu">☰</button>
+  <div class="title">Dashboard Nestor</div>
+</div>
 <aside class="sidebar">
   <div class="brand"><span class="dot"></span>Dashboard Nestor</div>
   {navlink('/dashboards', 'dashboards', 'Dashboards')}
@@ -185,7 +307,14 @@ def shell(title: str, active: str, body: str) -> str:
   <div class="spacer"></div>
   <div class="footer" id="footer-status">…</div>
 </aside>
+<div class="sidebar-backdrop" onclick="document.body.classList.remove('sidebar-open')"></div>
 <main>{body}</main>
+<script>
+// Sluit sidebar bij klik op nav-link (mobile)
+document.querySelectorAll(".sidebar .nav-item").forEach(a => {{
+  a.addEventListener("click", () => document.body.classList.remove("sidebar-open"));
+}});
+</script>
 <script>
 window.fmtEur = (v) => v == null ? "—" :
   new Intl.NumberFormat("nl-BE", {{ style:"currency", currency:"EUR", maximumFractionDigits: 0 }}).format(v);
@@ -263,31 +392,7 @@ om er toe te voegen.</p></div>"""
 <h1>Dashboards</h1>
 <p class="subtitle">Vastgepinde KPI-grafieken — vernieuwen automatisch bij elke sync.</p>
 
-<div class="panel" id="sync-bar"
-     style="display:flex;align-items:center;gap:18px;flex-wrap:wrap;justify-content:space-between">
-  <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
-    <div>
-      <div class="lbl" style="color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px">Laatste sync</div>
-      <div class="val" id="db-last-sync" style="font-size:14px;font-weight:600;margin-top:2px">…</div>
-    </div>
-    <div>
-      <div class="lbl" style="color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px">Status</div>
-      <div class="val" id="db-sync-status" style="font-size:14px;font-weight:600;margin-top:2px">…</div>
-    </div>
-    <div>
-      <div class="lbl" style="color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px">Rijen in cache</div>
-      <div class="val" id="db-rows" style="font-size:14px;font-weight:600;margin-top:2px">…</div>
-    </div>
-    <div>
-      <div class="lbl" style="color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px">Auto-sync</div>
-      <div class="val" style="font-size:14px;font-weight:600;margin-top:2px">dagelijks 11:59</div>
-    </div>
-  </div>
-  <button class="primary" id="db-sync-btn"
-          style="font-size:14px;padding:10px 20px;box-shadow:0 2px 8px rgba(79,70,229,.35)">
-    ↻ Sync Prato nu
-  </button>
-</div>
+{sync_bar_html('db')}
 
 <div class="kpi-row" id="kpi-row">
   <div class="kpi"><div class="lbl">Omzet (LTM, Nestor Core)</div><div class="val" id="kpi-omzet">…</div></div>
@@ -362,43 +467,14 @@ async function refreshKpis() {{
   }} catch (e) {{ console.error("kpi", e); }}
 }}
 
-// Sync-bar status
-async function refreshSyncBar() {{
-  try {{
-    const r = await fetch("/api/status");
-    const d = await r.json();
-    document.getElementById("db-rows").textContent =
-      (d.rows_cached || 0).toLocaleString("nl-BE");
-    const last = d.last_sync;
-    if (last) {{
-      document.getElementById("db-last-sync").textContent =
-        new Date(last.started_at).toLocaleString("nl-BE");
-      const st = document.getElementById("db-sync-status");
-      st.textContent = last.status;
-      st.className = "val " + (last.status === "ok" ? "ok" : last.status === "failed" ? "err" : "warn");
-    }} else {{
-      document.getElementById("db-last-sync").textContent = "—";
-      document.getElementById("db-sync-status").textContent = "—";
-    }}
-  }} catch (e) {{}}
-}}
-
-// Sync-knop
-document.getElementById("db-sync-btn").addEventListener("click", async function() {{
-  const btn = this; btn.disabled = true;
-  const orig = btn.textContent; btn.textContent = "Sync gepland…";
-  try {{
-    const r = await fetch("/sync/run", {{method:"POST"}});
-    const d = await r.json();
-    if (!r.ok) alert("Sync fout: " + (d.error || r.status));
-  }} catch (e) {{ alert("Sync fout: " + e); }}
-  finally {{
-    setTimeout(() => {{ btn.disabled = false; btn.textContent = orig; refreshSyncBar(); refreshKpis(); }}, 2000);
-  }}
+// Sync-bar (laatste sync, status, rijen) wordt door sync_bar_html() zelf
+// beheerd — geen extra JS hier nodig. We refreshen alleen de KPI's wanneer
+// de gebruiker op de sync-knop drukt.
+document.getElementById("db-sync-btn").addEventListener("click", () => {{
+  setTimeout(refreshKpis, 2500);
 }});
 
-refreshSyncBar(); refreshKpis();
-setInterval(refreshSyncBar, 10000);
+refreshKpis();
 PINNED.forEach(renderChart);
 </script>
 """
@@ -568,24 +644,10 @@ btnPin.addEventListener("click", async () => {{
 
 
 def export_body() -> str:
-    return """
+    return ("""
 <h1>Margelijst — Export</h1>
 <p class="subtitle">Filter de cache en download de exacte CSV.</p>
-
-<div class="panel" id="status-panel">
-  <h2 style="margin-top:0">Cache-status</h2>
-  <div class="status-row">
-    <div><div class="lbl">Rijen</div><div class="val" id="rows">…</div></div>
-    <div><div class="lbl">Laatste sync</div><div class="val" id="last-sync">…</div></div>
-    <div><div class="lbl">Status</div><div class="val" id="sync-status">…</div></div>
-    <div><div class="lbl">Auto-sync</div><div class="val">dagelijks 11:59 Europe/Brussels</div></div>
-  </div>
-  <div class="actions">
-    <button id="sync-btn">Sync nu</button>
-    <small style="align-self:center">overschrijft cache met live Prato-data</small>
-  </div>
-</div>
-
+""" + sync_bar_html("ex") + """
 <form id="export-form" method="get" action="/prato/export.csv">
   <h2>Filters</h2>
   <div class="panel">
@@ -687,37 +749,9 @@ document.getElementById("btn-reset").addEventListener("click", () => {
   }, 10);
 });
 
-// Status panel
-async function refreshStatus() {
-  try {
-    const r = await fetch("/api/status");
-    const d = await r.json();
-    document.getElementById("rows").textContent = d.rows_cached.toLocaleString("nl-BE");
-    const last = d.last_sync;
-    if (last) {
-      document.getElementById("last-sync").textContent =
-        new Date(last.started_at).toLocaleString("nl-BE");
-      const st = document.getElementById("sync-status");
-      st.textContent = last.status;
-      st.className = "val " + (last.status === "ok" ? "ok" : last.status === "failed" ? "err" : "");
-    } else {
-      document.getElementById("last-sync").textContent = "—";
-      document.getElementById("sync-status").textContent = "—";
-    }
-  } catch (e) {}
-}
-document.getElementById("sync-btn").addEventListener("click", async function() {
-  const btn = this; btn.disabled = true; btn.textContent = "Sync gepland…";
-  try {
-    const r = await fetch("/sync/run", {method:"POST"});
-    const d = await r.json();
-    if (!r.ok) alert("Sync fout: " + (d.error || r.status));
-  } catch (e) { alert("Sync fout: " + e); }
-  finally { setTimeout(()=>{btn.disabled=false; btn.textContent="Sync nu"; refreshStatus();}, 2000); }
-});
-refreshStatus(); setInterval(refreshStatus, 10000);
+// Sync-bar wordt afgehandeld door sync_bar_html('ex') zelf — geen extra JS hier.
 </script>
-"""
+""")
 
 
 # ---------------------------------------------------------------------------
@@ -726,11 +760,38 @@ refreshStatus(); setInterval(refreshStatus, 10000);
 
 
 def admin_body(historisch_summary: dict[str, Any]) -> str:
-    sektie_rows = "".join(
-        f"<tr><td><code>{_html.escape(s['code'])}</code></td>"
-        f"<td>{s['count']:,}</td></tr>"
+    from .mappings import SEKTIE_KENGETAL, SEKTIE_OMSCHRIJVING, KENGETAL_OMSCHRIJVING
+
+    # Tabel met top sekties uit de historische data + mapping (uit Python)
+    sektie_counts = {
+        s["code"]: s["count"]
         for s in (historisch_summary.get("sekties_top20") or [])
-    ).replace(",", ".")
+    }
+    all_sektie_codes = sorted(set(list(sektie_counts.keys()) + list(SEKTIE_KENGETAL.keys())))
+
+    def _row_for_sektie(code: str) -> str:
+        count = sektie_counts.get(code, 0)
+        kg = SEKTIE_KENGETAL.get(code, "")
+        kg_label = KENGETAL_OMSCHRIJVING.get(kg, "") if kg else ""
+        sek_label = SEKTIE_OMSCHRIJVING.get(code, "")
+        unmapped_cls = "" if kg else ' style="color:var(--warn)"'
+        kg_cell = f'<code>{_html.escape(kg)}</code> {_html.escape(kg_label)}' if kg else '<small style="color:var(--warn)">geen mapping</small>'
+        return (
+            f"<tr{unmapped_cls}>"
+            f'<td style="padding:6px 12px 6px 0"><code>{_html.escape(code)}</code></td>'
+            f'<td style="padding:6px 12px 6px 0">{_html.escape(sek_label)}</td>'
+            f'<td style="padding:6px 12px 6px 0">{kg_cell}</td>'
+            f'<td style="padding:6px 0;text-align:right">{count:,}</td>'
+            f"</tr>"
+        ).replace(",", ".")
+    sektie_rows = "\n".join(_row_for_sektie(c) for c in all_sektie_codes)
+
+    # Kengetal-tabel
+    kg_rows = "\n".join(
+        f"<tr><td style='padding:4px 12px 4px 0'><code>{_html.escape(c)}</code></td>"
+        f"<td style='padding:4px 0'>{_html.escape(l)}</td></tr>"
+        for c, l in KENGETAL_OMSCHRIJVING.items()
+    )
 
     last_imp = historisch_summary.get("last_import")
     last_imp_html = "—"
@@ -770,99 +831,61 @@ def admin_body(historisch_summary: dict[str, Any]) -> str:
 <h2>Sektie → werknemerskengetal mapping</h2>
 <div class="panel">
   <p style="margin:0 0 12px;color:var(--muted);font-size:13px">
-    De historische CSV gebruikt sektie-codes die niet 1-op-1 mappen op de
-    Prato-kengetallen (015, 050, 450, …). Maak hieronder de mapping aan
-    zodat segmenteringen op statuut ook voor historische data werken.
+    Mappings staan <strong>hardgecodeerd in <code>app/mappings.py</code></strong>.
+    Wijzig daar en commit + push om de mapping aan te passen. Hieronder de
+    actuele combinatie van wat in de historische CSV voorkomt en wat
+    momenteel gemapt is.
   </p>
 
-  <h3 style="font-size:13px;margin:16px 0 8px">Sektie-codes in de historiek (top 20)</h3>
-  <table style="border-collapse:collapse;width:auto;font-size:13px">
+  <table style="border-collapse:collapse;width:100%;font-size:13px;margin-top:10px">
     <thead><tr style="text-align:left;color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase">
-      <th style="padding:4px 12px 4px 0">code</th><th>rijen</th></tr></thead>
+      <th style="padding:6px 12px 6px 0">Sektie</th>
+      <th style="padding:6px 12px 6px 0">Sektie-naam</th>
+      <th style="padding:6px 12px 6px 0">→ Kengetal</th>
+      <th style="text-align:right;padding:6px 0">Rijen in historiek</th>
+    </tr></thead>
     <tbody>{sektie_rows}</tbody>
   </table>
+</div>
 
-  <h3 style="font-size:13px;margin:20px 0 8px">Mappings bewerken</h3>
-  <div id="mappings-table"></div>
-  <div class="actions">
-    <button type="button" id="add-row">+ Regel toevoegen</button>
-    <button type="button" class="primary" id="save-mappings">Mappings opslaan</button>
-    <small id="map-status" style="align-self:center"></small>
-  </div>
+<h2>RSZ-werknemerskengetal — namen</h2>
+<div class="panel">
+  <p style="margin:0 0 12px;color:var(--muted);font-size:13px">
+    Leesbare namen voor de codes uit de Prato-live-data, geconfigureerd in
+    <code>app/mappings.py</code> → <code>KENGETAL_OMSCHRIJVING</code>.
+  </p>
+  <table style="border-collapse:collapse;font-size:13px">
+    <thead><tr style="text-align:left;color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase">
+      <th style="padding:6px 12px 6px 0">Code</th><th>Naam</th>
+    </tr></thead>
+    <tbody>{kg_rows}</tbody>
+  </table>
 </div>
 
 <script>
-const importBtn = document.getElementById("import-btn");
-const importStatus = document.getElementById("import-status");
 document.getElementById("import-form").addEventListener("submit", async (e) => {{
   e.preventDefault();
   const file = document.getElementById("csv-file").files[0];
   if (!file) return;
   if (!confirm("Bestaande historische data wordt overschreven. Doorgaan?")) return;
-  importBtn.disabled = true; importStatus.textContent = "Bezig met importeren…";
+  const btn = document.getElementById("import-btn");
+  const stat = document.getElementById("import-status");
+  btn.disabled = true; stat.textContent = "Bezig met importeren…";
   const fd = new FormData(); fd.append("file", file);
   try {{
     const r = await fetch("/admin/import-historisch", {{method:"POST", body:fd}});
     const d = await r.json();
     if (r.ok && d.status === "ok") {{
-      importStatus.innerHTML = `<span class="ok">${{d.rows_loaded}} rijen geladen in ${{d.duration_ms}} ms.</span>`;
+      stat.innerHTML = `<span class="ok">${{d.rows_loaded}} rijen geladen in ${{d.duration_ms}} ms.</span>`;
       setTimeout(() => location.reload(), 1500);
     }} else {{
-      importStatus.innerHTML = `<span class="err">Fout: ${{d.error || d.status || r.status}}</span>`;
+      stat.innerHTML = `<span class="err">Fout: ${{d.error || d.status || r.status}}</span>`;
     }}
   }} catch (err) {{
-    importStatus.innerHTML = `<span class="err">${{err}}</span>`;
+    stat.innerHTML = `<span class="err">${{err}}</span>`;
   }} finally {{
-    importBtn.disabled = false;
+    btn.disabled = false;
   }}
 }});
-
-// Sektie-mapping
-function rowHtml(idx, sek, kg, om) {{
-  return `<tr data-idx="${{idx}}">
-    <td><input type="text" class="m-sek" value="${{sek||''}}" placeholder="7115" style="width:80px"></td>
-    <td><input type="text" class="m-kg" value="${{kg||''}}" placeholder="015" style="width:80px"></td>
-    <td><input type="text" class="m-om" value="${{om||''}}" placeholder="Arbeider" style="width:200px"></td>
-    <td><button type="button" class="danger m-del">×</button></td>
-  </tr>`;
-}}
-const mapDiv = document.getElementById("mappings-table");
-async function loadMappings() {{
-  const r = await fetch("/api/sektie-mappings"); const d = await r.json();
-  const rows = (d.mappings || []).map((m,i) =>
-    rowHtml(i, m.sektie_origineel, m.werknemerskengetal, m.omschrijving));
-  mapDiv.innerHTML = `<table style="border-collapse:collapse;font-size:13px">
-    <thead><tr style="text-align:left;font-size:11px;color:var(--muted);text-transform:uppercase">
-      <th style="padding:4px 8px 4px 0">sektie</th><th>kengetal</th><th>omschrijving</th><th></th>
-    </tr></thead><tbody>${{rows.join('') || rowHtml(0)}}</tbody></table>`;
-  attachRowHandlers();
-}}
-function attachRowHandlers() {{
-  mapDiv.querySelectorAll(".m-del").forEach(b => b.onclick = e =>
-    e.target.closest("tr").remove());
-}}
-document.getElementById("add-row").addEventListener("click", () => {{
-  const tbody = mapDiv.querySelector("tbody");
-  tbody.insertAdjacentHTML("beforeend", rowHtml(tbody.children.length));
-  attachRowHandlers();
-}});
-document.getElementById("save-mappings").addEventListener("click", async () => {{
-  const mappings = [];
-  mapDiv.querySelectorAll("tbody tr").forEach(tr => {{
-    const sek = tr.querySelector(".m-sek").value.trim();
-    const kg = tr.querySelector(".m-kg").value.trim();
-    const om = tr.querySelector(".m-om").value.trim();
-    if (sek && kg) mappings.push({{sektie_origineel: sek, werknemerskengetal: kg, omschrijving: om || null}});
-  }});
-  const r = await fetch("/api/sektie-mappings", {{
-    method:"POST", headers:{{"Content-Type":"application/json"}},
-    body: JSON.stringify({{mappings}})
-  }});
-  const d = await r.json();
-  const s = document.getElementById("map-status");
-  if (r.ok) s.innerHTML = `<span class="ok">${{d.updated}} regels opgeslagen.</span>`;
-  else s.innerHTML = `<span class="err">Fout: ${{d.error || r.status}}</span>`;
-}});
-loadMappings();
 </script>
 """

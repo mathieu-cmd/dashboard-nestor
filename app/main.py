@@ -54,7 +54,6 @@ from .import_historisch import (
     get_historisch_summary,
     get_sektie_mappings,
     import_csv_to_historisch,
-    set_sektie_mapping,
 )
 from .metrics import METRIC_REGISTRY, compute, _combine, _period_filter
 from .prato_export import (
@@ -356,19 +355,8 @@ def api_sektie_mappings_list():
     return {"mappings": get_sektie_mappings()}
 
 
-@app.post("/api/sektie-mappings")
-def api_sektie_mappings_set(payload: dict = Body(...)):
-    mappings = payload.get("mappings", [])
-    if not isinstance(mappings, list):
-        return JSONResponse(status_code=400, content={"error": "mappings moet een lijst zijn"})
-    # Delete-and-replace: alle huidige mappings wissen, dan opnieuw vullen.
-    # Pas hier op: als gebruiker per ongeluk lege lijst stuurt, gaat alles weg.
-    # Voor v1 accepteren we dat — Mathieu beheert dit zelf.
-    with cache_conn() as conn:
-        conn.execute("DELETE FROM sektie_kengetal_map")
-    updated = set_sektie_mapping(mappings)
-    log.info("AUDIT: sektie-mappings opnieuw geschreven: %d regels", updated)
-    return {"updated": updated}
+# POST /api/sektie-mappings is verwijderd: mappings worden hardcoded
+# beheerd in app/mappings.py en bij init_schema() in de DB gezet.
 
 
 @app.get("/api/historisch/summary")
