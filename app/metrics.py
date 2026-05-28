@@ -130,7 +130,7 @@ def time_series(
 
     sql = (
         f"SELECT {label_expr} AS lbl, {expr} AS val "
-        f"FROM margelijst "
+        f"FROM v_margelijst "
         f"WHERE {where} "
         f"GROUP BY {group_expr} "
         f"ORDER BY {group_expr}"
@@ -179,7 +179,7 @@ def ltm_rolling(metric: str, segment: str) -> dict[str, Any]:
     sql = f"""
         WITH monthly AS (
             SELECT jaar, maand, SUM({val_expr}) AS m_sum
-            FROM margelijst
+            FROM v_margelijst
             WHERE {seg_w}
             GROUP BY jaar, maand
         ),
@@ -241,7 +241,7 @@ def top_klanten(
     sql = (
         f"SELECT COALESCE(klantnaam, '(zonder klant)') AS lbl, "
         f"       {expr} AS val "
-        f"FROM margelijst "
+        f"FROM v_margelijst "
         f"WHERE {where} "
         f"GROUP BY klantnaam "
         f"ORDER BY val DESC "
@@ -289,7 +289,7 @@ def uren_per_medewerker(
         "       END AS val, "
         "       COUNT(DISTINCT persoonreferentieid) AS n_pers, "
         "       SUM(verloonde_uren) AS tot_uren "
-        "FROM margelijst "
+        "FROM v_margelijst "
         f"WHERE {where} "
         "GROUP BY klantnaam "
         "HAVING COUNT(DISTINCT persoonreferentieid) > 0 "

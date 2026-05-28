@@ -100,6 +100,115 @@ CREATE INDEX IF NOT EXISTS idx_klantnaam ON margelijst(klantnaam);
 CREATE INDEX IF NOT EXISTS idx_familienaam ON margelijst(familienaam);
 CREATE INDEX IF NOT EXISTS idx_voornaam ON margelijst(voornaam);
 
+CREATE TABLE IF NOT EXISTS margelijst_historisch (
+    jaar INTEGER,
+    kwartaal INTEGER,
+    maand INTEGER,
+    week INTEGER,                     -- altijd NULL voor historisch (= maand-grain)
+    vestigingseenheidreferentieid TEXT,
+    klantreferentieid TEXT,
+    klantnaam TEXT,
+    persoonreferentieid TEXT,
+    familienaam TEXT,                 -- volledige naam (niet gesplitst, '' voor voornaam)
+    voornaam TEXT,
+    loonkost REAL,                    -- = Kost in CSV (gegroepeerde loonkost)
+    werkuitkering REAL,
+    bvvrijstellingen REAL,            -- = BVVerm
+    rszwerkgeversbijdragen REAL,      -- = RSZ_SV (RSZ_Andere wordt apart bewaard)
+    rszverminderingen REAL,
+    provisies REAL,                   -- = AutoProv
+    omzet_gefactureerd REAL,          -- = 'Totale omzet' (historisch is alles 'gefactureerd')
+    omzet_te_factureren REAL,         -- NULL voor historisch
+    kost REAL,                        -- = TotaleKost
+    verloonde_uren REAL,              -- = 'Totale uren'
+    marge REAL,
+    margeperuur REAL,                 -- afgeleid: marge / verloonde_uren
+
+    -- Historiek-only kolommen (raw bewaard)
+    bruto_loon REAL,                  -- = Bruto
+    rsz_andere REAL,                  -- = RSZ_Andere (geen equivalent in live)
+    margeprocent REAL,                -- = 'Marge%' (live heeft margeperuur)
+    sektie_origineel TEXT,            -- = Sektie (HIAnt code, niet 1-op-1 mapbaar)
+    type_origineel INTEGER,           -- = Type (1 of 2)
+    jobstudent_flag INTEGER,          -- = Jobstudent (0/1/2)
+    up_kost REAL,                     -- aantal uur (UP)
+    up_omzet REAL,
+    ou_kost REAL,                     -- aantal uur (OU)
+    ou_omzet REAL,
+    gepresteerde_uren REAL,           -- = UP_kost + OU_kost (volgens definitie Mathieu)
+    wgnr_omzet INTEGER                -- altijd -1 in de CSV, betekenis onbekend
+);
+
+CREATE INDEX IF NOT EXISTS idx_h_jaar ON margelijst_historisch(jaar);
+CREATE INDEX IF NOT EXISTS idx_h_klant ON margelijst_historisch(klantreferentieid);
+CREATE INDEX IF NOT EXISTS idx_h_persoon ON margelijst_historisch(persoonreferentieid);
+CREATE INDEX IF NOT EXISTS idx_h_periode ON margelijst_historisch(jaar, maand);
+CREATE INDEX IF NOT EXISTS idx_h_klantnaam ON margelijst_historisch(klantnaam);
+CREATE INDEX IF NOT EXISTS idx_h_familienaam ON margelijst_historisch(familienaam);
+
+CREATE TABLE IF NOT EXISTS sektie_kengetal_map (
+    sektie_origineel TEXT PRIMARY KEY,
+    werknemerskengetal TEXT NOT NULL,
+    omschrijving TEXT
+);
+
+CREATE TABLE IF NOT EXISTS import_meta (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bron TEXT NOT NULL,            -- 'historisch'
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    status TEXT NOT NULL,           -- 'running','ok','failed'
+    rows_loaded INTEGER,
+    rows_skipped INTEGER,
+    filename TEXT,
+    error TEXT
+);
+
+-- View: UNION van live + historisch.
+-- Voor (jaar, maand)-combinaties die in BEIDE bronnen bestaan: kies historisch
+-- (= afgesloten data, gezaghebbender dan onze in-progress live cache).
+DROP VIEW IF EXISTS v_margelijst;
+CREATE VIEW v_margelijst AS
+SELECT
+    jaar, kwartaal, maand, week,
+    vestigingseenheidreferentieid,
+    klantreferentieid, klantnaam,
+    persoonreferentieid, familienaam, voornaam,
+    loonkost, werkuitkering, bvvrijstellingen,
+    rszwerkgeversbijdragen, rszverminderingen, provisies,
+    omzet_gefactureerd, omzet_te_factureren,
+    kost, verloonde_uren, marge, margeperuur,
+    COALESCE(
+        (SELECT werknemerskengetal FROM sektie_kengetal_map
+         WHERE sektie_origineel = h.sektie_origineel),
+        NULL
+    ) AS werknemerskengetal,
+    sektie_origineel,
+    gepresteerde_uren,
+    'historisch' AS bron
+FROM margelijst_historisch h
+
+UNION ALL
+
+SELECT
+    jaar, kwartaal, maand, week,
+    vestigingseenheidreferentieid,
+    klantreferentieid, klantnaam,
+    persoonreferentieid, familienaam, voornaam,
+    loonkost, werkuitkering, bvvrijstellingen,
+    rszwerkgeversbijdragen, rszverminderingen, provisies,
+    omzet_gefactureerd, omzet_te_factureren,
+    kost, verloonde_uren, marge, margeperuur,
+    NULL AS werknemerskengetal,   -- live data heeft niet (nog) een kengetal-kolom in cache
+    NULL AS sektie_origineel,
+    verloonde_uren AS gepresteerde_uren,  -- live: bij gebrek aan onderscheid = verloonde
+    'live' AS bron
+FROM margelijst m
+WHERE NOT EXISTS (
+    SELECT 1 FROM margelijst_historisch h
+    WHERE h.jaar = m.jaar AND h.maand = m.maand
+);
+
 CREATE TABLE IF NOT EXISTS sync_meta (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at TEXT NOT NULL,
@@ -304,7 +413,8 @@ def read_cached(filters: dict[str, Any]) -> Iterator[tuple]:
         params.append(f"%{val.lower()}%")
 
     cols_csv = ",".join(EXPORT_COLUMNS)
-    sql = f"SELECT {cols_csv} FROM margelijst"
+    # Lees uit v_margelijst (= UNION van live + historisch, met dedup op overlap)
+    sql = f"SELECT {cols_csv} FROM v_margelijst"
     if where_parts:
         sql += " WHERE " + " AND ".join(where_parts)
     sql += " ORDER BY jaar, kwartaal, maand, week, klantnaam, persoonreferentieid"

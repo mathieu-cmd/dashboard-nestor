@@ -132,7 +132,7 @@ def _connect_long_running(timeout_ms: int = 1_800_000) -> Iterator[Any]:
 # WHERE-clause op de joined CTE bewust *voor* de aggregatie zodat filters
 # correct effect hebben.
 
-_BASE_SQL_TEMPLATE = f"""
+_EXPORT_SQL = f"""
 WITH margelijst AS ({_MARGELIJST_SQL}),
 margelijst_j AS (
     SELECT m.*,
@@ -230,7 +230,6 @@ SELECT
         )
     END                                  AS margeperuur
 FROM joined
-{{WHERE_CLAUSE}}
 GROUP BY jaar, kwartaal, maand, week,
          vestigingseenheidreferentieid,
          klantreferentieid, klantnaam,
@@ -239,53 +238,9 @@ ORDER BY jaar, kwartaal, maand, week, klantnaam, persoonreferentieid
 """
 
 
-def build_export_sql(filters: dict[str, Any]) -> tuple[str, list[Any]]:
-    """Bouw de uiteindelijke SQL + params lijst op basis van filters.
-
-    filters dict-keys mappen 1:1 op kolomnamen. Lege/None waarden worden
-    overgeslagen. Lijsten geven multi-value filters."""
-    where_parts: list[str] = []
-    params: list[Any] = []
-
-    for col in INT_FILTERS:
-        v = filters.get(col)
-        if v is None or (isinstance(v, list) and not v):
-            continue
-        vals = v if isinstance(v, list) else [v]
-        try:
-            int_vals = [int(x) for x in vals]
-        except (TypeError, ValueError):
-            log.warning("Skip ongeldige integer filter %s=%r", col, vals)
-            continue
-        where_parts.append(f"{col} = ANY(%s)")
-        params.append(int_vals)
-
-    for col in ID_FILTERS:
-        v = filters.get(col)
-        if v is None or (isinstance(v, list) and not v):
-            continue
-        vals = v if isinstance(v, list) else [v]
-        str_vals = [str(x) for x in vals if x is not None and x != ""]
-        if not str_vals:
-            continue
-        where_parts.append(f"{col} = ANY(%s)")
-        params.append(str_vals)
-
-    for col in LIKE_FILTERS:
-        v = filters.get(col)
-        if v is None or v == "":
-            continue
-        # Single value (eerste indien lijst meegegeven)
-        val = v[0] if isinstance(v, list) else v
-        where_parts.append(f"{col} ILIKE %s")
-        params.append(f"%{val}%")
-
-    where_clause = ""
-    if where_parts:
-        where_clause = "WHERE " + " AND ".join(where_parts)
-
-    sql = _BASE_SQL_TEMPLATE.replace("{WHERE_CLAUSE}", where_clause)
-    return sql, params
+# build_export_sql() is geschrapt: sinds v0.2 lezen we via cache.read_cached() —
+# Prato wordt alleen nog aangesproken bij sync_from_prato() in cache.py, en die
+# gebruikt _EXPORT_SQL hierboven zonder filters.
 
 
 # ---------------------------------------------------------------------------

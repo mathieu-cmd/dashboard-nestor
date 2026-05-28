@@ -36,11 +36,12 @@ from typing import Any, Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from fastapi import Body, FastAPI, Query, Request
+from fastapi import Body, FastAPI, File, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 from .cache import (
     add_pinned_chart,
+    cache_conn,
     delete_pinned_chart,
     get_last_sync,
     get_row_count,
@@ -49,7 +50,13 @@ from .cache import (
     seed_default_pinned,
     sync_from_prato,
 )
-from .metrics import METRIC_REGISTRY, compute
+from .import_historisch import (
+    get_historisch_summary,
+    get_sektie_mappings,
+    import_csv_to_historisch,
+    set_sektie_mapping,
+)
+from .metrics import METRIC_REGISTRY, compute, _combine, _period_filter
 from .prato_export import (
     EXPORT_COLUMNS,
     diagnostic_summary,
@@ -65,8 +72,8 @@ from .security import (
     RequestSizeLimitMiddleware,
     SecurityHeadersMiddleware,
 )
-from .segments import SEGMENTS, all_segments
-from .templates import dashboards_body, explorer_body, export_body, shell
+from .segments import SEGMENTS, all_segments, segment_label, segment_where
+from .templates import admin_body, dashboards_body, explorer_body, export_body, shell
 
 logging.basicConfig(
     level=logging.INFO,
@@ -140,11 +147,10 @@ def root_redirect():
 @app.get("/dashboards", response_class=HTMLResponse)
 def page_dashboards():
     pinned = list_pinned_charts()
-    # Voeg segment_label toe per pin voor de UI-meta
     for p in pinned:
         s = SEGMENTS.get(p["segment"], {})
         p["segment_label"] = s.get("label", p["segment"])
-    body = dashboards_body(pinned)
+    body = dashboards_body(pinned, all_segments())
     return HTMLResponse(shell("Dashboards", "dashboards", body))
 
 
@@ -157,6 +163,12 @@ def page_explorer():
 @app.get("/export", response_class=HTMLResponse)
 def page_export():
     return HTMLResponse(shell("Export", "export", export_body()))
+
+
+@app.get("/admin", response_class=HTMLResponse)
+def page_admin():
+    summary = get_historisch_summary()
+    return HTMLResponse(shell("Admin", "admin", admin_body(summary)))
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +200,180 @@ def api_segments():
 @app.get("/api/metrics")
 def api_metrics():
     return {"metrics": METRIC_REGISTRY}
+
+
+# ---------------------------------------------------------------------------
+# KPI summary — voor de cards bovenaan /dashboards
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/kpi")
+def api_kpi(segment: str = Query(...), period_mode: str = Query("ltm")):
+    """Geeft totale omzet, marge, marge%, medewerkers + klanten voor een
+    segment + periode. Eén aggregate-query op v_margelijst."""
+    if segment not in SEGMENTS:
+        return JSONResponse(status_code=400, content={"error": f"Onbekend segment: {segment}"})
+
+    seg_w, seg_p = segment_where(segment)
+    try:
+        per_w, per_p = _period_filter(period_mode, None)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    where, params = _combine([(seg_w, seg_p), (per_w, per_p)])
+
+    sql = f"""
+        SELECT
+            SUM(omzet_gefactureerd + COALESCE(omzet_te_factureren,0)) AS omzet,
+            SUM(marge) AS marge,
+            SUM(verloonde_uren) AS uren,
+            COUNT(DISTINCT persoonreferentieid) AS mw,
+            COUNT(DISTINCT klantreferentieid) AS klanten
+        FROM v_margelijst
+        WHERE {where}
+    """
+    with cache_conn() as conn:
+        row = conn.execute(sql, params).fetchone()
+
+    omzet = float(row["omzet"] or 0)
+    marge = float(row["marge"] or 0)
+    marge_pct = (marge / omzet * 100) if omzet else None
+
+    return {
+        "segment": segment,
+        "segment_label": segment_label(segment),
+        "period_mode": period_mode,
+        "omzet": round(omzet, 2),
+        "marge": round(marge, 2),
+        "marge_pct": round(marge_pct, 2) if marge_pct is not None else None,
+        "uren": round(float(row["uren"] or 0), 2),
+        "medewerkers": int(row["mw"] or 0),
+        "klanten": int(row["klanten"] or 0),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Filter-values — autocomplete voor de Export-filters
+# ---------------------------------------------------------------------------
+
+
+_FILTER_FIELD_TO_COL = {
+    "jaar": "jaar",
+    "kwartaal": "kwartaal",
+    "maand": "maand",
+    "week": "week",
+    "vestigingseenheidreferentieid": "vestigingseenheidreferentieid",
+    "klantreferentieid": "klantreferentieid",
+    "klantnaam": "klantnaam",
+    "persoonreferentieid": "persoonreferentieid",
+    "familienaam": "familienaam",
+    "voornaam": "voornaam",
+}
+
+
+@app.get("/api/filter-values")
+def api_filter_values(
+    field: str = Query(...),
+    q: str = Query("", description="Filter-prefix voor autocomplete"),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """Geeft distinct waarden uit v_margelijst voor een veld, optioneel
+    gefilterd op zoekterm (LIKE %q%). Voor de Export-pagina-autocomplete.
+
+    Speciaal: 'klant' returnt {value=klantreferentieid, label=klantnaam};
+              'persoon' returnt {value=persoonreferentieid, label='Voornaam Familienaam'}.
+    """
+    init_schema()
+
+    if field == "klant" or field == "klantreferentieid":
+        sql = """
+            SELECT DISTINCT klantreferentieid AS value,
+                   COALESCE(klantnaam, '(zonder naam)') AS label
+            FROM v_margelijst
+            WHERE klantreferentieid IS NOT NULL
+        """
+        params: list = []
+        if q:
+            sql += " AND (LOWER(klantnaam) LIKE ? OR klantreferentieid LIKE ?)"
+            params.extend([f"%{q.lower()}%", f"%{q}%"])
+        sql += " ORDER BY label LIMIT ?"
+        params.append(limit)
+        with cache_conn() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return {"values": [{"value": r["value"], "label": r["label"]} for r in rows]}
+
+    if field == "persoon":
+        sql = """
+            SELECT DISTINCT persoonreferentieid AS value,
+                   COALESCE(voornaam || ' ' || familienaam, familienaam, '(zonder naam)') AS label
+            FROM v_margelijst
+            WHERE persoonreferentieid IS NOT NULL
+        """
+        params = []
+        if q:
+            sql += " AND (LOWER(familienaam) LIKE ? OR LOWER(voornaam) LIKE ? OR persoonreferentieid LIKE ?)"
+            params.extend([f"%{q.lower()}%", f"%{q.lower()}%", f"%{q}%"])
+        sql += " ORDER BY label LIMIT ?"
+        params.append(limit)
+        with cache_conn() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return {"values": [{"value": r["value"], "label": r["label"]} for r in rows]}
+
+    col = _FILTER_FIELD_TO_COL.get(field)
+    if not col:
+        return JSONResponse(status_code=400, content={"error": f"Onbekend veld: {field}"})
+
+    sql = f"SELECT DISTINCT {col} AS value FROM v_margelijst WHERE {col} IS NOT NULL"
+    params = []
+    if q:
+        sql += f" AND CAST({col} AS TEXT) LIKE ?"
+        params.append(f"%{q}%")
+    sql += f" ORDER BY {col} LIMIT ?"
+    params.append(limit)
+
+    with cache_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return {"values": [{"value": str(r["value"]) if r["value"] is not None else ""} for r in rows]}
+
+
+# ---------------------------------------------------------------------------
+# Admin — historische CSV-upload + sektie-mapping
+# ---------------------------------------------------------------------------
+
+
+@app.post("/admin/import-historisch")
+async def admin_import_historisch(file: UploadFile = File(...)):
+    """Upload + import van een HIAnt-CSV. Overschrijft margelijst_historisch."""
+    raw = await file.read()
+    if not raw:
+        return JSONResponse(status_code=400, content={"error": "leeg bestand"})
+    log.info("AUDIT: import-historisch gestart, file=%s, size=%d", file.filename, len(raw))
+    result = import_csv_to_historisch(raw, filename=file.filename or "")
+    return result
+
+
+@app.get("/api/sektie-mappings")
+def api_sektie_mappings_list():
+    return {"mappings": get_sektie_mappings()}
+
+
+@app.post("/api/sektie-mappings")
+def api_sektie_mappings_set(payload: dict = Body(...)):
+    mappings = payload.get("mappings", [])
+    if not isinstance(mappings, list):
+        return JSONResponse(status_code=400, content={"error": "mappings moet een lijst zijn"})
+    # Delete-and-replace: alle huidige mappings wissen, dan opnieuw vullen.
+    # Pas hier op: als gebruiker per ongeluk lege lijst stuurt, gaat alles weg.
+    # Voor v1 accepteren we dat — Mathieu beheert dit zelf.
+    with cache_conn() as conn:
+        conn.execute("DELETE FROM sektie_kengetal_map")
+    updated = set_sektie_mapping(mappings)
+    log.info("AUDIT: sektie-mappings opnieuw geschreven: %d regels", updated)
+    return {"updated": updated}
+
+
+@app.get("/api/historisch/summary")
+def api_historisch_summary():
+    return get_historisch_summary()
 
 
 # ---------------------------------------------------------------------------
