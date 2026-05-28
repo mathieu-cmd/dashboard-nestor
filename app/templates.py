@@ -604,7 +604,7 @@ function combineSeries(seriesList, chart_type) {{
       _unit: s.unit,
       borderColor: color,
       backgroundColor: chart_type === "bar" ? color : (color + "1a"),
-      fill: false, tension: 0.25, borderWidth: 2,
+      fill: false, tension: 0, borderWidth: 2,
       pointRadius: 3, pointHoverRadius: 6, spanGaps: true,
     }};
   }});
@@ -678,7 +678,10 @@ function buildChartConfig(p, combined, seriesList, showDataLabels) {{
           }}
         }},
         datalabels: showDataLabels ? {{
-          // Smart positioning:
+          // 'auto' display: chartjs-datalabels verbergt labels die zouden
+          // overlappen met andere labels op dezelfde chart.
+          display: "auto",
+          // Smart positioning per dataset:
           //  - laatste punt -> label LINKS (anders valt het buiten canvas)
           //  - eerste punt  -> label RECHTS
           //  - omzet (links-as)   -> label BOVEN de lijn
