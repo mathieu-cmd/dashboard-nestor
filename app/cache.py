@@ -509,34 +509,29 @@ def get_row_count_breakdown() -> dict:
 # ---------------------------------------------------------------------------
 
 
-_DEFAULT_PINNED = [
-    # Single-series defaults (oude lijst — bewust korter gemaakt voor v0.6)
-    # (titel, metric, segment, chart_type, grain, period_mode, period_value,
-    #  extra_options_json, position, series_json)
-    ("Omzet per maand — Nestor Core", "omzet", "nestor_core", "line", "month", "ltm", None, None, 10, None),
-    ("Bruto marge per maand — Nestor Core", "marge", "nestor_core", "line", "month", "ltm", None, None, 11, None),
-    ("Gepresteerde uren per week — Nestor Core", "uren", "nestor_core", "line", "week", "ltm", None, None, 12, None),
-    ("Top 10 klanten op omzet — Nestor Core (LTM)", "top_klanten_omzet", "nestor_core", "bar", "klant", "ltm", None, '{"top_n":10}', 13, None),
-]
+# Geen single-series defaults meer — Mathieu wil alleen de 2 multi-series
+# charts hieronder. /admin → "Reset pinned charts" wist alles en seed't
+# alleen deze 2 opnieuw.
+_DEFAULT_PINNED: list[tuple] = []
 
 
-# Multi-series default-pins (de twee charts die Mathieu expliciet vroeg).
-# series_json wordt door dashboards_body() gelezen als lijst van
-# (metric, segment) tuples; elke combo wordt een aparte lijn op de chart.
+# Multi-series default-pins met dual y-axis.
+# series_json: lijst van {metric, segment, label, axis}.
+#   axis = 'left' | 'right'  (default 'left')
 _DEFAULT_PINNED_MULTI = [
     # (titel, segment_default, chart_type, grain, period_mode, period_value,
     #  extra_options_json, position, series_json)
     (
         "Nestor — Omzet & Bruto marge per maand (sinds 2025-01)",
         "nestor", "line", "month", "since", "2025-01", None, 0,
-        '[{"metric":"omzet","segment":"nestor","label":"Omzet"},'
-        '{"metric":"marge","segment":"nestor","label":"Bruto marge"}]',
+        '[{"metric":"omzet","segment":"nestor","label":"Omzet","axis":"left"},'
+        '{"metric":"marge","segment":"nestor","label":"Bruto marge","axis":"right"}]',
     ),
     (
         "Nestor — Omzet & Bruto marge LTM (rolling 12 mo)",
         "nestor", "line", "month", "all", None, None, 1,
-        '[{"metric":"omzet_ltm","segment":"nestor","label":"Omzet LTM"},'
-        '{"metric":"marge_ltm","segment":"nestor","label":"Bruto marge LTM"}]',
+        '[{"metric":"omzet_ltm","segment":"nestor","label":"Omzet LTM","axis":"left"},'
+        '{"metric":"marge_ltm","segment":"nestor","label":"Bruto marge LTM","axis":"right"}]',
     ),
 ]
 

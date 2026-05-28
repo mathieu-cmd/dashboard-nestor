@@ -139,6 +139,41 @@ h2{font-size:13px;margin:24px 0 10px;color:var(--muted);
 .chart-card .unpin:hover{opacity:1;background:#fef2f2}
 .chart-card .empty,.chart-card .loading{color:var(--muted);text-align:center;
   padding:80px 0;font-size:13px;font-style:italic}
+.chart-card.clickable{cursor:zoom-in}
+.chart-card.clickable:hover{box-shadow:var(--shadow-md);transform:translateY(-1px);transition:all .15s}
+
+/* Period-override toolbar bovenaan dashboards */
+.period-toolbar{background:var(--panel);border:1px solid var(--border);
+  border-radius:var(--radius);padding:12px 16px;margin-bottom:16px;
+  display:flex;align-items:center;gap:14px;flex-wrap:wrap;box-shadow:var(--shadow-sm)}
+.period-toolbar label{font-size:12px;color:var(--muted);font-weight:600;
+  text-transform:uppercase;letter-spacing:.5px;margin:0}
+.period-toolbar select,.period-toolbar input{padding:6px 10px;border:1px solid var(--border);
+  border-radius:8px;font:inherit;font-size:13px;background:#fff;min-width:160px}
+.period-toolbar .group{display:flex;align-items:center;gap:8px}
+.period-toolbar small{color:var(--muted);font-size:11px}
+
+/* Modal voor vergrote chart */
+.modal-overlay{position:fixed;inset:0;z-index:50;display:none;
+  align-items:center;justify-content:center;padding:24px}
+.modal-overlay.open{display:flex}
+.modal-overlay .backdrop{position:absolute;inset:0;background:rgba(15,23,42,.7);
+  backdrop-filter:blur(4px)}
+.modal-content{position:relative;width:100%;max-width:1200px;height:80vh;max-height:800px;
+  background:#fff;border-radius:14px;padding:24px;
+  display:flex;flex-direction:column;box-shadow:0 25px 50px -12px rgba(0,0,0,.5);z-index:1}
+.modal-content h3{margin:0 0 4px;font-size:18px;font-weight:700;padding-right:40px}
+.modal-content .modal-meta{color:var(--muted);font-size:12px;margin-bottom:16px}
+.modal-canvas-wrap{flex:1;min-height:0;position:relative}
+.modal-canvas-wrap canvas{max-height:none !important}
+.modal-close{position:absolute;top:16px;right:16px;width:32px;height:32px;
+  border:1px solid var(--border);background:#fff;border-radius:50%;cursor:pointer;
+  font-size:18px;display:flex;align-items:center;justify-content:center;padding:0}
+.modal-close:hover{background:var(--panel)}
+@media (max-width:760px){
+  .modal-overlay{padding:8px}
+  .modal-content{padding:14px;height:90vh}
+}
 
 /* Forms */
 .panel{background:var(--panel);border:1px solid var(--border);
@@ -297,6 +332,7 @@ def shell(title: str, active: str, body: str) -> str:
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="preconnect" href="https://cdn.jsdelivr.net">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tom-select@2.3.1/dist/css/tom-select.css">
 <script src="https://cdn.jsdelivr.net/npm/tom-select@2.3.1/dist/js/tom-select.complete.min.js"></script>
 <style>{_CSS}</style>
@@ -381,10 +417,10 @@ om er toe te voegen.</p></div>"""
             meta_bits.append(p["period_mode"])
         meta = " · ".join(meta_bits)
         cards_html += f"""
-<div class="chart-card" data-id="{p['id']}">
+<div class="chart-card clickable" data-id="{p['id']}" onclick="openChartModal({p['id']})">
   <h3>{_html.escape(p['titel'])}</h3>
   <div class="meta">{_html.escape(meta)}</div>
-  <button class="unpin" onclick="unpin({p['id']})">Verwijder</button>
+  <button class="unpin" onclick="event.stopPropagation();unpin({p['id']})">Verwijder</button>
   <div class="canvas-wrap"><canvas id="{chart_id}"></canvas></div>
 </div>"""
 
@@ -399,55 +435,89 @@ om er toe te voegen.</p></div>"""
 
     return f"""
 <h1>Dashboards</h1>
-<p class="subtitle">Vastgepinde grafieken — verversen bij elke sync.</p>
+<p class="subtitle">Vastgepinde grafieken — klik op een grafiek om 'm te vergroten.</p>
 
 {sync_bar_html('db')}
+
+<div class="period-toolbar">
+  <div class="group">
+    <label for="period-override">Periode</label>
+    <select id="period-override">
+      <option value="">Per grafiek behouden</option>
+      <option value="since:2025-01">Sinds 2025-01</option>
+      <option value="since:2024-01">Sinds 2024-01</option>
+      <option value="since:2023-01">Sinds 2023-01</option>
+      <option value="ltm">Laatste 12 maanden</option>
+      <option value="ytd">Year-to-date</option>
+      <option value="all">Volledige historiek</option>
+      <option value="year:2026">2026</option>
+      <option value="year:2025">2025</option>
+      <option value="year:2024">2024</option>
+      <option value="year:2023">2023</option>
+    </select>
+  </div>
+  <small>LTM-rolling grafieken negeren deze filter (= rolling 12 mo is altijd 'huidig')</small>
+</div>
 
 <div class="charts-grid">
 {cards_html}
 </div>
 
+<div class="modal-overlay" id="chart-modal">
+  <div class="backdrop" onclick="closeChartModal()"></div>
+  <div class="modal-content">
+    <button class="modal-close" onclick="closeChartModal()">×</button>
+    <h3 id="modal-title">…</h3>
+    <div class="modal-meta" id="modal-meta">…</div>
+    <div class="modal-canvas-wrap"><canvas id="modal-canvas"></canvas></div>
+  </div>
+</div>
+
 <script>
 const PINNED = {pinned_json};
 
-// Kleurenpalet voor multi-series datasets — Tableau-achtige tinten.
-const SERIES_COLORS = [
-  "#4f46e5",  // indigo
-  "#10b981",  // emerald
-  "#f97316",  // orange
-  "#ec4899",  // pink
-  "#06b6d4",  // cyan
-  "#a855f7",  // violet
-];
+// Cache voor de gerenderde Chart-instances per pin-id (voor unpin + modal).
+const CHART_INSTANCES = {{}};
+const CHART_LAST_DATA = {{}};  // gegevens nodig voor modal-render
 
-function chartCardEl(id) {{
-  return document.getElementById("chart-" + id);
-}}
+const SERIES_COLORS = ["#4f46e5", "#10b981", "#f97316", "#ec4899", "#06b6d4", "#a855f7"];
 
+function chartCardEl(id) {{ return document.getElementById("chart-" + id); }}
 function showChartError(id, msg) {{
-  const canvas = chartCardEl(id);
-  if (!canvas) return;
-  canvas.parentNode.innerHTML =
-    '<div class="empty" style="color:var(--err);font-style:normal">'
+  const c = chartCardEl(id); if (!c) return;
+  c.parentNode.innerHTML = '<div class="empty" style="color:var(--err);font-style:normal">'
     + (msg || "Fout bij laden") + '</div>';
 }}
-
 function showChartEmpty(id, msg) {{
-  const canvas = chartCardEl(id);
-  if (!canvas) return;
-  canvas.parentNode.innerHTML = '<div class="empty">' + (msg || "Geen data.") + '</div>';
+  const c = chartCardEl(id); if (!c) return;
+  c.parentNode.innerHTML = '<div class="empty">' + (msg || "Geen data.") + '</div>';
 }}
 
-// Roept /api/metric voor één (metric, segment) combo, returnt {{labels,values,unit,label}}.
-async function fetchSeries(spec, p) {{
+// Period-override: lees keuze uit dropdown, applieer per pinned spec.
+function effectivePeriod(p) {{
+  const ov = (document.getElementById("period-override") || {{}}).value || "";
+  // LTM-rolling metrics negeren de override (gebruiken altijd 'all')
+  const specs = p.series_json ? safeParse(p.series_json, []) : [{{metric: p.metric}}];
+  const allLtm = specs.length > 0 && specs.every(s => /(^|_)ltm$/.test(s.metric || ""));
+  if (allLtm || !ov) return {{period_mode: p.period_mode, period_value: p.period_value}};
+  if (ov === "ltm")  return {{period_mode: "ltm", period_value: null}};
+  if (ov === "ytd")  return {{period_mode: "ytd", period_value: null}};
+  if (ov === "all")  return {{period_mode: "all", period_value: null}};
+  if (ov.startsWith("since:")) return {{period_mode: "since", period_value: ov.substring(6)}};
+  if (ov.startsWith("year:"))  return {{period_mode: "year", period_value: ov.substring(5)}};
+  return {{period_mode: p.period_mode, period_value: p.period_value}};
+}}
+function safeParse(s, fb) {{ try {{ return JSON.parse(s); }} catch (e) {{ return fb; }} }}
+
+async function fetchSeries(spec, p, effPeriod) {{
   const params = new URLSearchParams({{
-    metric: spec.metric, segment: spec.segment,
-    grain: p.grain, period_mode: p.period_mode
+    metric: spec.metric, segment: spec.segment, grain: p.grain,
+    period_mode: effPeriod.period_mode
   }});
-  if (p.period_value) params.append("period_value", p.period_value);
+  if (effPeriod.period_value) params.append("period_value", effPeriod.period_value);
   if (p.extra_options) {{
-    try {{ const eo = JSON.parse(p.extra_options);
-           if (eo.top_n) params.append("top_n", eo.top_n); }} catch (e) {{}}
+    const eo = safeParse(p.extra_options, {{}});
+    if (eo.top_n) params.append("top_n", eo.top_n);
   }}
   const r = await fetch("/api/metric?" + params.toString());
   if (!r.ok) {{
@@ -456,90 +526,163 @@ async function fetchSeries(spec, p) {{
   }}
   const d = await r.json();
   return {{
-    labels: d.labels || [],
-    values: d.values || [],
-    unit: d.unit || "",
+    labels: d.labels || [], values: d.values || [], unit: d.unit || "",
     label: spec.label || (spec.metric + " — " + (d.segment_label || spec.segment)),
+    axis: spec.axis || "left",
   }};
 }}
 
-// Combineer meerdere series met mogelijk verschillende label-sets.
-// Returnt {{labels, datasets}} klaar voor Chart.js.
 function combineSeries(seriesList, chart_type) {{
-  // Union van alle labels, in chronologische volgorde van eerste-zichtbare.
   const labelSet = new Set();
   for (const s of seriesList) for (const l of s.labels) labelSet.add(l);
   const labels = [...labelSet].sort();
-  // Per dataset: aligned values via label->value map
   const datasets = seriesList.map((s, i) => {{
     const color = SERIES_COLORS[i % SERIES_COLORS.length];
     const m = new Map(s.labels.map((l, j) => [l, s.values[j]]));
     return {{
       label: s.label,
       data: labels.map(l => m.has(l) ? m.get(l) : null),
+      yAxisID: s.axis === "right" ? "y2" : "y",
+      _unit: s.unit,
       borderColor: color,
-      backgroundColor: chart_type === "bar" ? color : (color + "1a"),  // 1a = 10% alpha
-      fill: false,
-      tension: 0.25,
-      borderWidth: 2,
-      pointRadius: 3,
-      pointHoverRadius: 5,
-      spanGaps: true,
+      backgroundColor: chart_type === "bar" ? color : (color + "1a"),
+      fill: false, tension: 0.25, borderWidth: 2,
+      pointRadius: 3, pointHoverRadius: 6, spanGaps: true,
     }};
   }});
   return {{ labels, datasets }};
 }}
 
+function buildChartConfig(p, combined, seriesList, showDataLabels) {{
+  const hasRightAxis = seriesList.some(s => s.axis === "right");
+  const leftUnit  = (seriesList.find(s => s.axis !== "right") || seriesList[0]).unit;
+  const rightUnit = (seriesList.find(s => s.axis === "right") || seriesList[0]).unit;
+  const fmtLeft  = window.unitFormatter(leftUnit);
+  const fmtRight = window.unitFormatter(rightUnit);
+  const fmtFor   = (ds) => ds.yAxisID === "y2" ? fmtRight : fmtLeft;
+
+  const scales = {{
+    y:  {{ type: "linear", position: "left",
+           ticks: {{ callback: (v) => fmtLeft(v) }},
+           grid: {{ color: "rgba(0,0,0,0.05)" }} }},
+    x:  {{ grid: {{ display: false }} }}
+  }};
+  if (hasRightAxis) {{
+    scales.y2 = {{ type: "linear", position: "right",
+                   ticks: {{ callback: (v) => fmtRight(v) }},
+                   grid: {{ drawOnChartArea: false }} }};
+  }}
+
+  return {{
+    type: p.chart_type,
+    data: combined,
+    options: {{
+      responsive: true, maintainAspectRatio: false,
+      interaction: {{ mode: "index", intersect: false }},
+      plugins: {{
+        legend: {{ display: combined.datasets.length > 1, position: "bottom",
+                   labels: {{ boxWidth: 12, padding: 12, font: {{ size: 11 }} }} }},
+        tooltip: {{
+          callbacks: {{
+            label: (ctx) => ctx.dataset.label + ": " + fmtFor(ctx.dataset)(ctx.parsed.y ?? ctx.parsed)
+          }}
+        }},
+        datalabels: showDataLabels ? {{
+          align: "top", anchor: "end", offset: 4,
+          color: (ctx) => ctx.dataset.borderColor,
+          font: {{ size: 10, weight: "600" }},
+          formatter: (v, ctx) => v == null ? "" : fmtFor(ctx.dataset)(v),
+        }} : false
+      }},
+      scales
+    }},
+    plugins: showDataLabels ? [ChartDataLabels] : []
+  }};
+}}
+
 async function renderChart(p) {{
   const id = p.id;
-  // Bepaal series specs.
   let specs;
   if (p.series_json) {{
-    try {{ specs = JSON.parse(p.series_json); }}
-    catch (e) {{ showChartError(id, "Ongeldige series_json"); return; }}
+    specs = safeParse(p.series_json, null);
     if (!Array.isArray(specs) || !specs.length) {{
-      showChartError(id, "series_json moet een niet-lege lijst zijn"); return;
+      showChartError(id, "Ongeldige series_json"); return;
     }}
   }} else {{
     specs = [{{ metric: p.metric, segment: p.segment }}];
   }}
 
   try {{
-    const seriesList = await Promise.all(specs.map(s => fetchSeries(s, p)));
-    // Alle datasets leeg?
-    const totalPoints = seriesList.reduce((acc, s) => acc + s.values.length, 0);
+    const effPeriod = effectivePeriod(p);
+    const seriesList = await Promise.all(specs.map(s => fetchSeries(s, p, effPeriod)));
+    const totalPoints = seriesList.reduce((a, s) => a + s.values.length, 0);
     if (totalPoints === 0) {{ showChartEmpty(id); return; }}
 
     const combined = combineSeries(seriesList, p.chart_type);
-    const unit = seriesList[0].unit;
-    const fmt = window.unitFormatter(unit);
+    // Datalabels alleen tonen als de chart "klein" is (= ingebed). In modal
+    // tonen we ze ook, maar in de grid willen we ze niet bij heel veel punten.
+    const showLabels = combined.labels.length <= 14;
+    const cfg = buildChartConfig(p, combined, seriesList, showLabels);
 
-    new Chart(chartCardEl(id), {{
-      type: p.chart_type,
-      data: combined,
-      options: {{
-        responsive: true, maintainAspectRatio: false,
-        interaction: {{ mode: "index", intersect: false }},
-        plugins: {{
-          legend: {{ display: specs.length > 1, position: "bottom",
-                    labels: {{ boxWidth: 12, padding: 12, font: {{ size: 11 }} }} }},
-          tooltip: {{
-            callbacks: {{
-              label: (ctx) => ctx.dataset.label + ": " + fmt(ctx.parsed.y ?? ctx.parsed)
-            }}
-          }}
-        }},
-        scales: {{
-          y: {{ ticks: {{ callback: (v) => fmt(v) }} }},
-          x: {{ grid: {{ display: false }} }}
+    if (CHART_INSTANCES[id]) {{
+      try {{ CHART_INSTANCES[id].destroy(); }} catch (e) {{}}
+    }}
+    const canvas = chartCardEl(id);
+    if (!canvas) return;
+    canvas.parentNode.style.display = "";
+    if (canvas.parentNode.tagName !== "DIV" || !canvas.parentNode.classList.contains("canvas-wrap")) {{
+      // Bij eerdere error werd canvas-wrap vervangen door .empty. Herstellen.
+      const card = document.querySelector('.chart-card[data-id="' + id + '"]');
+      if (card) {{
+        const oldEmpty = card.querySelector(".empty");
+        if (oldEmpty) {{
+          const wrap = document.createElement("div");
+          wrap.className = "canvas-wrap";
+          const c = document.createElement("canvas"); c.id = "chart-" + id;
+          wrap.appendChild(c); oldEmpty.replaceWith(wrap);
         }}
       }}
-    }});
+    }}
+    CHART_INSTANCES[id] = new Chart(chartCardEl(id), cfg);
+    CHART_LAST_DATA[id] = {{ p, specs, seriesList, combined }};
   }} catch (e) {{
     console.error("chart " + id + " gefaald", e);
     showChartError(id, "Fout: " + (e.message || e));
   }}
 }}
+
+// Modal — vergrote versie van dezelfde chart
+let MODAL_CHART = null;
+function openChartModal(id) {{
+  const data = CHART_LAST_DATA[id];
+  if (!data) return;
+  const pinned = PINNED.find(x => x.id === id);
+  document.getElementById("modal-title").textContent = pinned ? pinned.titel : "";
+  document.getElementById("modal-meta").textContent =
+    (pinned && pinned.segment ? pinned.segment : "") + " · " +
+    (pinned && pinned.period_mode ? pinned.period_mode : "");
+  const cfg = buildChartConfig(data.p, data.combined, data.seriesList, true);
+  // Force modal chart altijd datalabels + grotere fonts
+  cfg.options.plugins.legend.labels.font = {{ size: 13 }};
+  if (cfg.options.plugins.datalabels) {{
+    cfg.options.plugins.datalabels.font = {{ size: 12, weight: "600" }};
+  }}
+  document.getElementById("chart-modal").classList.add("open");
+  if (MODAL_CHART) {{ try {{ MODAL_CHART.destroy(); }} catch (e) {{}} }}
+  MODAL_CHART = new Chart(document.getElementById("modal-canvas"), cfg);
+}}
+function closeChartModal() {{
+  document.getElementById("chart-modal").classList.remove("open");
+  if (MODAL_CHART) {{ try {{ MODAL_CHART.destroy(); }} catch (e) {{}} MODAL_CHART = null; }}
+}}
+document.addEventListener("keydown", (e) => {{
+  if (e.key === "Escape") closeChartModal();
+}});
+
+// Period-override: bij wijziging herrender alle pinned charts
+document.getElementById("period-override").addEventListener("change", () => {{
+  PINNED.forEach(renderChart);
+}});
 
 async function unpin(id) {{
   if (!confirm("Deze grafiek verwijderen?")) return;
@@ -548,7 +691,7 @@ async function unpin(id) {{
 }}
 
 if (typeof Chart === "undefined") {{
-  console.error("Chart.js is niet geladen — grafieken kunnen niet renderen");
+  console.error("Chart.js is niet geladen");
   document.querySelectorAll(".chart-card").forEach(card => {{
     const empty = card.querySelector(".canvas-wrap");
     if (empty) empty.innerHTML = '<div class="empty" style="color:var(--err)">Chart.js niet geladen</div>';
@@ -800,11 +943,13 @@ def export_body() -> str:
         create: false,
       });
     }
-    const tsVest = initAutocomplete("f-vest", "vestigingseenheidreferentieid");
+    // Vestiging: gewone multi-select met alle 4 waarden in de dropdown
+    // (geen autocomplete-typen nodig — er zijn maar enkele vestigingen).
+    const tsVest = initStatic("f-vest", []);
     const tsKlant = initAutocomplete("f-klant", "klant", "label");
     const tsPersoon = initAutocomplete("f-persoon-naam", "persoon", "label");
 
-    // Pre-vul jaar-opties dynamisch (geen query nodig)
+    // Pre-vul jaar en vestiging dynamisch (geen query nodig — distinct lijst)
     fetch("/api/filter-values?field=jaar&q=")
       .then(r => r.json())
       .then(d => {
@@ -812,6 +957,14 @@ def export_body() -> str:
           tsJaar.addOption({value: String(v.value), text: String(v.value)}));
       })
       .catch(e => console.warn("jaar-options laden mislukt", e));
+
+    fetch("/api/filter-values?field=vestigingseenheidreferentieid&q=")
+      .then(r => r.json())
+      .then(d => {
+        (d.values || []).forEach(v =>
+          tsVest.addOption({value: String(v.value), text: String(v.value)}));
+      })
+      .catch(e => console.warn("vestiging-options laden mislukt", e));
 
     // Submit-handler: bouw multi-value URL en navigeer
     document.getElementById("export-form").addEventListener("submit", function(e) {
