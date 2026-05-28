@@ -646,8 +646,8 @@ btnPin.addEventListener("click", async () => {{
 def export_body() -> str:
     return ("""
 <h1>Margelijst — Export</h1>
-<p class="subtitle">Filter de cache en download de exacte CSV.</p>
-""" + sync_bar_html("ex") + """
+<p class="subtitle">Filter de cache en download de exacte CSV. Sync staat op Dashboards.</p>
+
 <form id="export-form" method="get" action="/prato/export.csv">
   <h2>Filters</h2>
   <div class="panel">
