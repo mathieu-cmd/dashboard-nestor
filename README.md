@@ -1,19 +1,51 @@
 # dashboard-nestor
 
-Margelijst-dashboard voor Nestor — leest live uit de Prato Postgres en
-levert CSV-exports met filters.
+Margelijst-dashboard voor Nestor — lokale SQLite-cache van Prato-data,
+dagelijkse auto-sync, UI met filters en CSV-download.
 
-Endpoints:
+## Architectuur in één blik
 
-- `GET /health` — Railway healthcheck.
-- `GET /` — info over beschikbare endpoints.
-- `GET /prato/test-connection` — sanity check op Prato Postgres.
-- `GET /prato/export/diag` — introspectie van klant-bronnen.
-- `GET /prato/export.csv?<filters>` — margelijst-export als CSV.
+```
+                  ┌──────────────────────────────────────┐
+   browser  ─────►│  dashboard.nestor.be                  │
+                  │  ┌────────────────────────────────┐   │
+                  │  │ FastAPI + APScheduler          │   │
+                  │  │  /            UI (HTML form)   │   │
+                  │  │  /prato/export.csv   uit cache │   │
+                  │  │  /sync/run    manuele trigger  │   │
+                  │  └─────┬──────────────────┬───────┘   │
+                  │        │ daily 11:59 BE   │ read       │
+                  │        ▼                  ▼            │
+                  │  ┌──────────────┐  ┌──────────────┐    │
+                  │  │ sync_from_   │  │ SQLite cache │    │
+                  │  │ prato()      │──►/data/        │    │
+                  │  └──────┬───────┘  │ margelijst.  │    │
+                  └─────────┼──────────┼──sqlite──────┘    │
+                            │ live query
+                            ▼
+                   ┌────────────────────┐
+                   │ Prato Postgres     │
+                   │ (read-only,        │
+                   │  IP-whitelisted)   │
+                   └────────────────────┘
+```
+
+## Endpoints
+
+| Endpoint | Beschrijving |
+|---|---|
+| `GET /` | HTML-form met filters, Download- en Sync-knop |
+| `GET /health` | Railway healthcheck |
+| `GET /api/status` | JSON: cache row-count + laatste sync |
+| `POST /sync/run` | Trigger manuele sync (background) |
+| `GET /sync/status` | JSON: status van meest recente sync |
+| `GET /prato/test-connection` | **Live** check op Prato Postgres |
+| `GET /prato/export/diag` | **Live** introspectie van klant-bronnen |
+| `GET /prato/export.csv?<filters>` | Margelijst-CSV uit de lokale cache |
 
 ## Filters op `/prato/export.csv`
 
-Geen filter = volledige historiek.
+Geen filter = volledige cache. Filters worden op de SQLite-cache toegepast.
 
 | Filter | Type | Multi-value |
 |---|---|---|
@@ -24,9 +56,9 @@ Geen filter = volledige historiek.
 | `vestigingseenheidreferentieid` | text exact | ✓ |
 | `klantreferentieid` | text exact | ✓ |
 | `persoonreferentieid` | text exact | ✓ |
-| `klantnaam` | LIKE %term% | ✗ |
-| `familienaam` | LIKE %term% | ✗ |
-| `voornaam` | LIKE %term% | ✗ |
+| `klantnaam` | LIKE %term%, case-insensitive | ✗ |
+| `familienaam` | LIKE %term%, case-insensitive | ✗ |
+| `voornaam` | LIKE %term%, case-insensitive | ✗ |
 
 Voorbeeld: `?jaar=2026&maand=4&maand=5&klantnaam=Smartmat`
 
@@ -48,21 +80,34 @@ kost; verloonde_uren;
 marge; margeperuur
 ```
 
-Grain: één rij per (jaar, kwartaal, maand, week, vestiging, klant,
-persoon). Lonen sluiten wekelijks af.
+Grain: één rij per (jaar, kwartaal, maand, week, vestiging, klant, persoon).
 
 `marge = omzet_gefactureerd + omzet_te_factureren − kost`
 `margeperuur = marge / verloonde_uren`
 
+## Sync
+
+**Automatisch**: APScheduler draait elke dag om **11:59 Europe/Brussels**
+de `sync_from_prato()`-functie. Bij elke sync wordt de hele
+`margelijst`-tabel in SQLite **overschreven** (DELETE + INSERT) — geen
+incremental.
+
+**Manueel**: `POST /sync/run` (of via de UI). Sync draait in background;
+status zichtbaar via `GET /sync/status` of in de UI (polling elke 10s).
+
+**Log**: elke sync wordt opgeslagen in tabel `sync_meta` met
+`started_at`, `ended_at`, `status` (running/ok/failed), `rows_loaded`,
+`duration_ms`, `error`.
+
 ## Stack
 
-FastAPI · psycopg3 · Railway · Nixpacks.
+FastAPI · psycopg3 · SQLite · APScheduler · Railway · Nixpacks.
 
-## Deploy
+## Deploy op Railway
 
-Railway-service binnen het bestaande `mathieus-agent`-project zodat de
-static outbound IPs gedeeld worden met invoice-bundler. Anders moet er
-nieuwe IP-whitelisting aangevraagd worden bij Prato.
+Service binnen het bestaande `mathieus-agent`-project zodat de static
+outbound IPs gedeeld worden met invoice-bundler (= Prato whitelist
+hoeft niet aangepast te worden).
 
 ### Environment variables
 
@@ -74,23 +119,27 @@ nieuwe IP-whitelisting aangevraagd worden bij Prato.
 | `PRATO_DB_PASSWORD` | ✓ | — | komt uit Railway Variables, nooit in code |
 | `PRATO_DB_NAME` | ✓ | — | de Nestor-database UUID |
 | `PRATO_DB_SSLMODE` | | `require` | |
-| `PRATO_DB_STATEMENT_TIMEOUT_MS` | | `300000` (5 min) | Hoger voor zware queries |
-| `DATA_DIR` | | `/data` | Volume mount path |
-| `SECRET_KEY` | | — | Niet gebruikt in v0.1, reservering voor latere sessies |
+| `PRATO_DB_STATEMENT_TIMEOUT_MS` | | `300000` | Hoger voor zware sync-query |
+| `DATA_DIR` | | `/data` | Volume mount path (SQLite-cache) |
+| `SECRET_KEY` | | — | Niet gebruikt in v0.2, reservering voor latere sessies |
+
+### Volume
+
+Mount path `/data`, 1 GB volstaat ruim voor onze schaal (~10 MB voor
+~10k rijen).
 
 ### Custom domain
 
-DNS van `nestor.be`: voeg toe
-```
-CNAME dashboard  <waarde-uit-Railway>
-```
+`dashboard.nestor.be` als CNAME naar Railway's target. **Cloudflare
+proxy uit** (grijze wolk = DNS Only) — Railway regelt eigen Let's
+Encrypt-cert.
 
-## Geen authenticatie in v0.1
+## Geen authenticatie in v0.2
 
 URL is publiek toegankelijk voor wie 'm kent. Hou de URL discreet of
 voeg later auth toe (Google SSO met `@nestor.be`-domein in de roadmap).
 
 ## Rate-limiting
 
-30 requests per minuut per IP (in-memory, single-worker assumption).
-`/health` wordt uitgesloten zodat Railway-healthchecks niet limited zijn.
+30 requests per minuut per IP (in-memory). `/health` uitgesloten zodat
+Railway-healthchecks niet limited zijn.

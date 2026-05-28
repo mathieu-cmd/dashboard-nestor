@@ -322,30 +322,33 @@ def _row_to_csv_line(row_dict: dict[str, Any]) -> bytes:
 
 
 def stream_export_csv(filters: dict[str, Any]) -> Iterator[bytes]:
-    """Yield de CSV regel-per-regel als bytes.
+    """Yield de CSV regel-per-regel uit de SQLite-cache.
 
-    Eerste yield is de header. Daarna server-side cursor over de query."""
-    sql, params = build_export_sql(filters)
-    log.info("export-csv: sql length=%d, filter-params=%d, applying filters=%s",
-             len(sql), len(params), {k: v for k, v in filters.items() if v})
+    Sinds we een lokale cache hebben (cache.py), gaat geen enkel
+    export-request meer rechtstreeks naar Prato. Eén nightly sync vult
+    de cache; export.csv leest daaruit — instant, ook bij duizenden
+    rijen, en ongevoelig voor Prato uptime.
+
+    Eerste yield is de header.
+    """
+    from .cache import read_cached  # lazy import — voorkomt circulaire imports
+
+    log.info(
+        "export-csv (uit cache): filters=%s",
+        {k: v for k, v in filters.items() if v},
+    )
 
     yield (";".join(EXPORT_COLUMNS) + "\n").encode("utf-8")
 
-    with _connect_long_running() as conn:
-        with conn.cursor(name="export_csv") as cur:
-            cur.itersize = 5000
-            cur.execute(sql, params)
-            cols = [d.name for d in cur.description] if cur.description else []
+    row_count = 0
+    for tup in read_cached(filters):
+        rec = dict(zip(EXPORT_COLUMNS, tup))
+        yield _row_to_csv_line(rec)
+        row_count += 1
+        if row_count % 10_000 == 0:
+            log.info("export-csv: %d rijen", row_count)
 
-            row_count = 0
-            for raw_row in cur:
-                rec = dict(zip(cols, raw_row))
-                yield _row_to_csv_line(rec)
-                row_count += 1
-                if row_count % 10_000 == 0:
-                    log.info("export-csv: %d rijen", row_count)
-
-            log.info("export-csv: klaar — %d rijen", row_count)
+    log.info("export-csv: klaar — %d rijen", row_count)
 
 
 # ---------------------------------------------------------------------------
