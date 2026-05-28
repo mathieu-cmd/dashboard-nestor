@@ -109,6 +109,20 @@ CREATE TABLE IF NOT EXISTS sync_meta (
     duration_ms INTEGER,
     error TEXT
 );
+
+CREATE TABLE IF NOT EXISTS pinned_charts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    titel TEXT NOT NULL,
+    metric TEXT NOT NULL,                       -- 'omzet','marge','loonkost','kost','uren','medewerkers','omzet_ltm','marge_ltm','uren_ltm','top_klanten_omzet','top_klanten_marge','uren_per_medewerker'
+    segment TEXT NOT NULL,                      -- 'nestor','nestor_core','smartmat','martha','vab','all'
+    chart_type TEXT NOT NULL DEFAULT 'line',    -- 'line','bar'
+    grain TEXT NOT NULL DEFAULT 'month',        -- 'month','week','year','klant'
+    period_mode TEXT NOT NULL DEFAULT 'ltm',    -- 'ltm','ytd','year','all'
+    period_value TEXT,                          -- bv '2026' bij mode='year'
+    extra_options TEXT,                         -- JSON (top_n, etc)
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -336,3 +350,115 @@ def get_row_count() -> int:
     with cache_conn() as conn:
         row = conn.execute("SELECT COUNT(*) FROM margelijst").fetchone()
         return row[0] if row else 0
+
+
+# ---------------------------------------------------------------------------
+# Pinned charts — vastgepinde dashboard-grafieken
+# ---------------------------------------------------------------------------
+
+
+_DEFAULT_PINNED = [
+    # (titel, metric, segment, chart_type, grain, period_mode, period_value, extra_options_json, position)
+    ("Omzet per maand — Nestor", "omzet", "nestor", "line", "month", "ltm", None, None, 0),
+    ("Omzet per maand — Nestor Core", "omzet", "nestor_core", "line", "month", "ltm", None, None, 1),
+    ("Omzet per maand — Smartmat", "omzet", "smartmat", "line", "month", "ltm", None, None, 2),
+    ("Bruto marge per maand — Nestor", "marge", "nestor", "line", "month", "ltm", None, None, 3),
+    ("Bruto marge per maand — Nestor Core", "marge", "nestor_core", "line", "month", "ltm", None, None, 4),
+    ("Bruto marge per maand — Smartmat", "marge", "smartmat", "line", "month", "ltm", None, None, 5),
+    ("Omzet LTM (rolling) — Nestor Core", "omzet_ltm", "nestor_core", "line", "month", "all", None, None, 6),
+    ("Bruto marge LTM (rolling) — Nestor Core", "marge_ltm", "nestor_core", "line", "month", "all", None, None, 7),
+    ("Gepresteerde uren per week — Nestor Core", "uren", "nestor_core", "line", "week", "ltm", None, None, 8),
+    ("Aantal actieve medewerkers/maand — Nestor Core", "medewerkers", "nestor_core", "line", "month", "ltm", None, None, 9),
+    ("Top 10 klanten op omzet — Nestor Core (LTM)", "top_klanten_omzet", "nestor_core", "bar", "klant", "ltm", None, '{"top_n":10}', 10),
+    ("Gem. uren/medewerker per klant — Nestor Core (LTM, top 10)", "uren_per_medewerker", "nestor_core", "bar", "klant", "ltm", None, '{"top_n":10}', 11),
+]
+
+
+def seed_default_pinned() -> int:
+    """Insert de default-pinned grafieken als de pinned_charts tabel leeg is.
+
+    Returnt het aantal nieuwe rijen ingevoegd. Idempotent."""
+    init_schema()
+    with cache_conn() as conn:
+        existing = conn.execute("SELECT COUNT(*) FROM pinned_charts").fetchone()[0]
+        if existing > 0:
+            return 0
+        now = datetime.now(timezone.utc).isoformat()
+        rows = [
+            (titel, metric, segment, chart_type, grain, period_mode, period_value, extra, pos, now)
+            for (titel, metric, segment, chart_type, grain, period_mode, period_value, extra, pos)
+            in _DEFAULT_PINNED
+        ]
+        conn.executemany(
+            """
+            INSERT INTO pinned_charts
+              (titel, metric, segment, chart_type, grain, period_mode, period_value,
+               extra_options, position, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        log.info("Default-pinned grafieken geseed: %d", len(rows))
+        return len(rows)
+
+
+def list_pinned_charts() -> list[dict[str, Any]]:
+    init_schema()
+    with cache_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM pinned_charts ORDER BY position, id"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def add_pinned_chart(
+    titel: str,
+    metric: str,
+    segment: str,
+    chart_type: str = "line",
+    grain: str = "month",
+    period_mode: str = "ltm",
+    period_value: Optional[str] = None,
+    extra_options: Optional[str] = None,
+) -> int:
+    init_schema()
+    now = datetime.now(timezone.utc).isoformat()
+    with cache_conn() as conn:
+        max_pos = conn.execute(
+            "SELECT COALESCE(MAX(position), -1) FROM pinned_charts"
+        ).fetchone()[0]
+        cur = conn.execute(
+            """
+            INSERT INTO pinned_charts
+              (titel, metric, segment, chart_type, grain, period_mode, period_value,
+               extra_options, position, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (titel, metric, segment, chart_type, grain, period_mode, period_value,
+             extra_options, max_pos + 1, now),
+        )
+        return cur.lastrowid
+
+
+def delete_pinned_chart(chart_id: int) -> bool:
+    init_schema()
+    with cache_conn() as conn:
+        cur = conn.execute("DELETE FROM pinned_charts WHERE id = ?", (chart_id,))
+        return cur.rowcount > 0
+
+
+def reorder_pinned_charts(id_order: list[int]) -> None:
+    """Update position-veld op basis van een nieuwe volgorde."""
+    init_schema()
+    with cache_conn() as conn:
+        conn.execute("BEGIN")
+        try:
+            for new_pos, chart_id in enumerate(id_order):
+                conn.execute(
+                    "UPDATE pinned_charts SET position = ? WHERE id = ?",
+                    (new_pos, chart_id),
+                )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
