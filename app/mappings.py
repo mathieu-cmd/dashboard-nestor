@@ -28,13 +28,13 @@ from __future__ import annotations
 # blijft NULL voor historische rijen.
 
 SEKTIE_KENGETAL: dict[str, str] = {
-    # "7115": "840",   # bv. flexi-job arbeider
-    # "195":  "450",   # bv. bediende
-    # "7195": "841",   # bv. flexi-job bediende
-    # "1195": "450",
-    # "115":  "015",
-    # "500":  "050",
-    # "5000": "050",
+    "115":  "015",   # Arbeider
+    "1195": "450",   # Bediende
+    "195":  "450",   # Bediende
+    "500":  "050",   # Student
+    "5000": "050",   # Student
+    "7115": "840",   # Flexi-job arbeider
+    "7195": "841",   # Flexi-job bediende
 }
 
 
@@ -43,13 +43,13 @@ SEKTIE_KENGETAL: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 SEKTIE_OMSCHRIJVING: dict[str, str] = {
-    # "7115": "Arbeider — flexi (sektie 7115)",
-    # "195":  "Bediende (sektie 195)",
-    # "7195": "Bediende — flexi (sektie 7195)",
-    # "1195": "Bediende (sektie 1195)",
-    # "115":  "Arbeider (sektie 115)",
-    # "500":  "Student (sektie 500)",
-    # "5000": "Student (sektie 5000)",
+    "115":  "Arbeider",
+    "1195": "Bediende",
+    "195":  "Bediende",
+    "500":  "Student",
+    "5000": "Student",
+    "7115": "Flexi-job arbeider",
+    "7195": "Flexi-job bediende",
 }
 
 

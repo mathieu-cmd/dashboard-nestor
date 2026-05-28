@@ -238,11 +238,21 @@ CREATE TABLE IF NOT EXISTS pinned_charts (
 
 def init_schema() -> None:
     """Maak tabellen + indexen aan als ze nog niet bestaan. Idempotent.
-    Synchroniseert sektie_kengetal_map vanuit de hardcoded Python-mapping."""
+    Synchroniseert sektie_kengetal_map vanuit de hardcoded Python-mapping.
+    Migreert pinned_charts.series_json kolom als die nog niet bestaat."""
     with cache_conn() as conn:
         conn.executescript(_SCHEMA)
+        _ensure_column(conn, "pinned_charts", "series_json", "TEXT")
     _sync_sektie_mappings_from_code()
     log.info("Cache schema ready at %s", cache_db_path())
+
+
+def _ensure_column(conn: Any, table: str, col: str, ddl_type: str) -> None:
+    """SQLite ondersteunt geen ADD COLUMN IF NOT EXISTS. We checken via PRAGMA."""
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if col not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl_type}")
+        log.info("Migratie: kolom %s toegevoegd aan %s", col, table)
 
 
 def _sync_sektie_mappings_from_code() -> None:
@@ -500,48 +510,101 @@ def get_row_count_breakdown() -> dict:
 
 
 _DEFAULT_PINNED = [
-    # (titel, metric, segment, chart_type, grain, period_mode, period_value, extra_options_json, position)
-    ("Omzet per maand — Nestor", "omzet", "nestor", "line", "month", "ltm", None, None, 0),
-    ("Omzet per maand — Nestor Core", "omzet", "nestor_core", "line", "month", "ltm", None, None, 1),
-    ("Omzet per maand — Smartmat", "omzet", "smartmat", "line", "month", "ltm", None, None, 2),
-    ("Bruto marge per maand — Nestor", "marge", "nestor", "line", "month", "ltm", None, None, 3),
-    ("Bruto marge per maand — Nestor Core", "marge", "nestor_core", "line", "month", "ltm", None, None, 4),
-    ("Bruto marge per maand — Smartmat", "marge", "smartmat", "line", "month", "ltm", None, None, 5),
-    ("Omzet LTM (rolling) — Nestor Core", "omzet_ltm", "nestor_core", "line", "month", "all", None, None, 6),
-    ("Bruto marge LTM (rolling) — Nestor Core", "marge_ltm", "nestor_core", "line", "month", "all", None, None, 7),
-    ("Gepresteerde uren per week — Nestor Core", "uren", "nestor_core", "line", "week", "ltm", None, None, 8),
-    ("Aantal actieve medewerkers/maand — Nestor Core", "medewerkers", "nestor_core", "line", "month", "ltm", None, None, 9),
-    ("Top 10 klanten op omzet — Nestor Core (LTM)", "top_klanten_omzet", "nestor_core", "bar", "klant", "ltm", None, '{"top_n":10}', 10),
-    ("Gem. uren/medewerker per klant — Nestor Core (LTM, top 10)", "uren_per_medewerker", "nestor_core", "bar", "klant", "ltm", None, '{"top_n":10}', 11),
+    # Single-series defaults (oude lijst — bewust korter gemaakt voor v0.6)
+    # (titel, metric, segment, chart_type, grain, period_mode, period_value,
+    #  extra_options_json, position, series_json)
+    ("Omzet per maand — Nestor Core", "omzet", "nestor_core", "line", "month", "ltm", None, None, 10, None),
+    ("Bruto marge per maand — Nestor Core", "marge", "nestor_core", "line", "month", "ltm", None, None, 11, None),
+    ("Gepresteerde uren per week — Nestor Core", "uren", "nestor_core", "line", "week", "ltm", None, None, 12, None),
+    ("Top 10 klanten op omzet — Nestor Core (LTM)", "top_klanten_omzet", "nestor_core", "bar", "klant", "ltm", None, '{"top_n":10}', 13, None),
+]
+
+
+# Multi-series default-pins (de twee charts die Mathieu expliciet vroeg).
+# series_json wordt door dashboards_body() gelezen als lijst van
+# (metric, segment) tuples; elke combo wordt een aparte lijn op de chart.
+_DEFAULT_PINNED_MULTI = [
+    # (titel, segment_default, chart_type, grain, period_mode, period_value,
+    #  extra_options_json, position, series_json)
+    (
+        "Nestor — Omzet & Bruto marge per maand (sinds 2025-01)",
+        "nestor", "line", "month", "since", "2025-01", None, 0,
+        '[{"metric":"omzet","segment":"nestor","label":"Omzet"},'
+        '{"metric":"marge","segment":"nestor","label":"Bruto marge"}]',
+    ),
+    (
+        "Nestor — Omzet & Bruto marge LTM (rolling 12 mo)",
+        "nestor", "line", "month", "all", None, None, 1,
+        '[{"metric":"omzet_ltm","segment":"nestor","label":"Omzet LTM"},'
+        '{"metric":"marge_ltm","segment":"nestor","label":"Bruto marge LTM"}]',
+    ),
 ]
 
 
 def seed_default_pinned() -> int:
-    """Insert de default-pinned grafieken als de pinned_charts tabel leeg is.
+    """Insert de default-pinned grafieken (zowel single-series als multi).
 
-    Returnt het aantal nieuwe rijen ingevoegd. Idempotent."""
+    Idempotent: pins worden geïdentificeerd op `titel`. Bestaande titels
+    worden niet opnieuw toegevoegd. Returnt het aantal NIEUWE rijen.
+    Mathieu kan via /api/pinned/{id} unpinnen wat hij niet wil; bij volgende
+    deploy worden ze niet opnieuw toegevoegd want de titel bestaat al niet
+    (alleen de andere titels).
+    """
+    init_schema()
+    now = datetime.now(timezone.utc).isoformat()
+    new_count = 0
+    with cache_conn() as conn:
+        existing_titles = {
+            row[0] for row in conn.execute("SELECT titel FROM pinned_charts").fetchall()
+        }
+
+        # Single-series
+        for (titel, metric, segment, chart_type, grain, period_mode, period_value,
+             extra, pos, series_json) in _DEFAULT_PINNED:
+            if titel in existing_titles:
+                continue
+            conn.execute(
+                """
+                INSERT INTO pinned_charts
+                  (titel, metric, segment, chart_type, grain, period_mode, period_value,
+                   extra_options, position, created_at, series_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (titel, metric, segment, chart_type, grain, period_mode, period_value,
+                 extra, pos, now, series_json),
+            )
+            new_count += 1
+
+        # Multi-series (segment-veld is enkel een fallback-label; echte
+        # specs zitten in series_json)
+        for (titel, segment, chart_type, grain, period_mode, period_value,
+             extra, pos, series_json) in _DEFAULT_PINNED_MULTI:
+            if titel in existing_titles:
+                continue
+            conn.execute(
+                """
+                INSERT INTO pinned_charts
+                  (titel, metric, segment, chart_type, grain, period_mode, period_value,
+                   extra_options, position, created_at, series_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                # metric-kolom is verplicht (NOT NULL); we vullen 'multi' in als marker
+                (titel, "multi", segment, chart_type, grain, period_mode, period_value,
+                 extra, pos, now, series_json),
+            )
+            new_count += 1
+
+    if new_count:
+        log.info("Default-pinned grafieken geseed: %d nieuwe", new_count)
+    return new_count
+
+
+def reset_pinned_charts() -> int:
+    """Wis alle pinned charts en re-seed de defaults. Returnt nieuw-count."""
     init_schema()
     with cache_conn() as conn:
-        existing = conn.execute("SELECT COUNT(*) FROM pinned_charts").fetchone()[0]
-        if existing > 0:
-            return 0
-        now = datetime.now(timezone.utc).isoformat()
-        rows = [
-            (titel, metric, segment, chart_type, grain, period_mode, period_value, extra, pos, now)
-            for (titel, metric, segment, chart_type, grain, period_mode, period_value, extra, pos)
-            in _DEFAULT_PINNED
-        ]
-        conn.executemany(
-            """
-            INSERT INTO pinned_charts
-              (titel, metric, segment, chart_type, grain, period_mode, period_value,
-               extra_options, position, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            rows,
-        )
-        log.info("Default-pinned grafieken geseed: %d", len(rows))
-        return len(rows)
+        conn.execute("DELETE FROM pinned_charts")
+    return seed_default_pinned()
 
 
 def list_pinned_charts() -> list[dict[str, Any]]:
@@ -562,6 +625,7 @@ def add_pinned_chart(
     period_mode: str = "ltm",
     period_value: Optional[str] = None,
     extra_options: Optional[str] = None,
+    series_json: Optional[str] = None,
 ) -> int:
     init_schema()
     now = datetime.now(timezone.utc).isoformat()
@@ -573,11 +637,11 @@ def add_pinned_chart(
             """
             INSERT INTO pinned_charts
               (titel, metric, segment, chart_type, grain, period_mode, period_value,
-               extra_options, position, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               extra_options, position, created_at, series_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (titel, metric, segment, chart_type, grain, period_mode, period_value,
-             extra_options, max_pos + 1, now),
+             extra_options, max_pos + 1, now, series_json),
         )
         return cur.lastrowid
 

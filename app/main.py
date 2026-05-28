@@ -47,6 +47,7 @@ from .cache import (
     get_row_count,
     init_schema,
     list_pinned_charts,
+    reset_pinned_charts,
     seed_default_pinned,
     sync_from_prato,
 )
@@ -419,11 +420,16 @@ def api_pinned_add(payload: dict = Body(...)):
     period_mode = payload.get("period_mode", "ltm")
     period_value = payload.get("period_value")
     extra_options = payload.get("extra_options")
+    series_json = payload.get("series_json")  # multi-series support
 
-    if metric not in METRIC_REGISTRY:
-        return JSONResponse(status_code=400, content={"error": f"Onbekende metric: {metric}"})
-    if segment not in SEGMENTS:
-        return JSONResponse(status_code=400, content={"error": f"Onbekend segment: {segment}"})
+    # Bij single-series: metric + segment moeten geldig zijn.
+    # Bij multi-series (series_json gezet): metric = 'multi' marker, individuele
+    # specs binnen series_json worden door de frontend afgehandeld.
+    if not series_json:
+        if metric not in METRIC_REGISTRY:
+            return JSONResponse(status_code=400, content={"error": f"Onbekende metric: {metric}"})
+        if segment not in SEGMENTS:
+            return JSONResponse(status_code=400, content={"error": f"Onbekend segment: {segment}"})
 
     new_id = add_pinned_chart(
         titel=titel,
@@ -434,9 +440,18 @@ def api_pinned_add(payload: dict = Body(...)):
         period_mode=period_mode,
         period_value=period_value,
         extra_options=extra_options,
+        series_json=series_json,
     )
-    log.info("AUDIT: pin toegevoegd id=%d metric=%s segment=%s", new_id, metric, segment)
+    log.info("AUDIT: pin toegevoegd id=%d titel=%r", new_id, titel)
     return {"ok": True, "id": new_id}
+
+
+@app.post("/admin/reset-pins")
+def admin_reset_pins():
+    """Wis alle pinned charts en re-seed de defaults uit cache._DEFAULT_PINNED."""
+    new_count = reset_pinned_charts()
+    log.info("AUDIT: pinned charts gereset, %d nieuwe defaults geseed", new_count)
+    return {"ok": True, "new_count": new_count}
 
 
 @app.delete("/api/pinned/{chart_id}")

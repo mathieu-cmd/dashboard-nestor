@@ -146,6 +146,14 @@ h2{font-size:13px;margin:24px 0 10px;color:var(--muted);
   padding:18px;margin-bottom:16px}
 .grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:12px 16px}
 @media (max-width:700px){.grid2{grid-template-columns:1fr}}
+/* Compactere filter-grid (4 kolommen op desktop) */
+.filter-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px 12px}
+@media (max-width:1000px){.filter-grid{grid-template-columns:repeat(2,1fr)}}
+@media (max-width:600px){.filter-grid{grid-template-columns:1fr}}
+.filter-grid label{font-size:11.5px;margin-bottom:3px}
+.filter-grid input[type=text]{font-size:12.5px;padding:6px 8px}
+.filter-grid .ts-control{padding:3px 6px !important;min-height:30px !important;font-size:12.5px !important}
+.filter-grid .ts-control .item{font-size:11.5px !important;padding:1px 6px !important}
 label{display:block;font-weight:600;margin-bottom:5px;font-size:12.5px}
 label .hint{color:var(--muted);font-weight:400;font-size:11px;margin-left:6px}
 input[type=text],input[type=number],input[type=file],select,textarea{
@@ -386,96 +394,168 @@ om er toe te voegen.</p></div>"""
         "period_mode": p["period_mode"],
         "period_value": p.get("period_value"),
         "extra_options": p.get("extra_options"),
+        "series_json": p.get("series_json"),
     } for p in pinned])
 
     return f"""
 <h1>Dashboards</h1>
-<p class="subtitle">Vastgepinde KPI-grafieken — vernieuwen automatisch bij elke sync.</p>
+<p class="subtitle">Vastgepinde grafieken — verversen bij elke sync.</p>
 
 {sync_bar_html('db')}
 
-<div class="kpi-row" id="kpi-row">
-  <div class="kpi"><div class="lbl">Omzet (LTM, Nestor Core)</div><div class="val" id="kpi-omzet">…</div></div>
-  <div class="kpi"><div class="lbl">Bruto marge (LTM)</div><div class="val" id="kpi-marge">…</div></div>
-  <div class="kpi"><div class="lbl">Marge %</div><div class="val" id="kpi-margepct">…</div></div>
-  <div class="kpi"><div class="lbl">Actieve medewerkers</div><div class="val" id="kpi-mw">…</div></div>
-</div>
-
-<h2>Grafieken</h2>
 <div class="charts-grid">
 {cards_html}
 </div>
 
 <script>
 const PINNED = {pinned_json};
-async function renderChart(p) {{
+
+// Kleurenpalet voor multi-series datasets — Tableau-achtige tinten.
+const SERIES_COLORS = [
+  "#4f46e5",  // indigo
+  "#10b981",  // emerald
+  "#f97316",  // orange
+  "#ec4899",  // pink
+  "#06b6d4",  // cyan
+  "#a855f7",  // violet
+];
+
+function chartCardEl(id) {{
+  return document.getElementById("chart-" + id);
+}}
+
+function showChartError(id, msg) {{
+  const canvas = chartCardEl(id);
+  if (!canvas) return;
+  canvas.parentNode.innerHTML =
+    '<div class="empty" style="color:var(--err);font-style:normal">'
+    + (msg || "Fout bij laden") + '</div>';
+}}
+
+function showChartEmpty(id, msg) {{
+  const canvas = chartCardEl(id);
+  if (!canvas) return;
+  canvas.parentNode.innerHTML = '<div class="empty">' + (msg || "Geen data.") + '</div>';
+}}
+
+// Roept /api/metric voor één (metric, segment) combo, returnt {{labels,values,unit,label}}.
+async function fetchSeries(spec, p) {{
   const params = new URLSearchParams({{
-    metric:p.metric, segment:p.segment, grain:p.grain, period_mode:p.period_mode
+    metric: spec.metric, segment: spec.segment,
+    grain: p.grain, period_mode: p.period_mode
   }});
   if (p.period_value) params.append("period_value", p.period_value);
   if (p.extra_options) {{
     try {{ const eo = JSON.parse(p.extra_options);
            if (eo.top_n) params.append("top_n", eo.top_n); }} catch (e) {{}}
   }}
-  try {{
-    const r = await fetch("/api/metric?" + params.toString());
-    const d = await r.json();
-    const canvas = document.getElementById("chart-" + p.id);
-    if (!d.labels || d.labels.length === 0) {{
-      canvas.parentNode.innerHTML = '<div class="empty">Geen data voor deze selectie.</div>';
-      return;
+  const r = await fetch("/api/metric?" + params.toString());
+  if (!r.ok) {{
+    const err = await r.json().catch(() => ({{}}));
+    throw new Error("API " + r.status + ": " + (err.error || ""));
+  }}
+  const d = await r.json();
+  return {{
+    labels: d.labels || [],
+    values: d.values || [],
+    unit: d.unit || "",
+    label: spec.label || (spec.metric + " — " + (d.segment_label || spec.segment)),
+  }};
+}}
+
+// Combineer meerdere series met mogelijk verschillende label-sets.
+// Returnt {{labels, datasets}} klaar voor Chart.js.
+function combineSeries(seriesList, chart_type) {{
+  // Union van alle labels, in chronologische volgorde van eerste-zichtbare.
+  const labelSet = new Set();
+  for (const s of seriesList) for (const l of s.labels) labelSet.add(l);
+  const labels = [...labelSet].sort();
+  // Per dataset: aligned values via label->value map
+  const datasets = seriesList.map((s, i) => {{
+    const color = SERIES_COLORS[i % SERIES_COLORS.length];
+    const m = new Map(s.labels.map((l, j) => [l, s.values[j]]));
+    return {{
+      label: s.label,
+      data: labels.map(l => m.has(l) ? m.get(l) : null),
+      borderColor: color,
+      backgroundColor: chart_type === "bar" ? color : (color + "1a"),  // 1a = 10% alpha
+      fill: false,
+      tension: 0.25,
+      borderWidth: 2,
+      pointRadius: 3,
+      pointHoverRadius: 5,
+      spanGaps: true,
+    }};
+  }});
+  return {{ labels, datasets }};
+}}
+
+async function renderChart(p) {{
+  const id = p.id;
+  // Bepaal series specs.
+  let specs;
+  if (p.series_json) {{
+    try {{ specs = JSON.parse(p.series_json); }}
+    catch (e) {{ showChartError(id, "Ongeldige series_json"); return; }}
+    if (!Array.isArray(specs) || !specs.length) {{
+      showChartError(id, "series_json moet een niet-lege lijst zijn"); return;
     }}
-    const fmt = window.unitFormatter(d.unit || "");
-    new Chart(canvas, {{
+  }} else {{
+    specs = [{{ metric: p.metric, segment: p.segment }}];
+  }}
+
+  try {{
+    const seriesList = await Promise.all(specs.map(s => fetchSeries(s, p)));
+    // Alle datasets leeg?
+    const totalPoints = seriesList.reduce((acc, s) => acc + s.values.length, 0);
+    if (totalPoints === 0) {{ showChartEmpty(id); return; }}
+
+    const combined = combineSeries(seriesList, p.chart_type);
+    const unit = seriesList[0].unit;
+    const fmt = window.unitFormatter(unit);
+
+    new Chart(chartCardEl(id), {{
       type: p.chart_type,
-      data: {{ labels:d.labels, datasets:[{{
-        label:d.metric, data:d.values,
-        borderColor:"#4f46e5",
-        backgroundColor: p.chart_type==="bar" ? "#4f46e5" : "rgba(79,70,229,0.1)",
-        fill: p.chart_type==="line", tension:0.25, borderWidth:2,
-        pointRadius:3, pointHoverRadius:5,
-      }}] }},
-      options: {{ responsive:true, maintainAspectRatio:false,
-        plugins:{{ legend:{{display:false}},
-          tooltip:{{callbacks:{{label:(ctx)=>fmt(ctx.parsed.y??ctx.parsed)}}}}}},
-        scales:{{ y:{{ticks:{{callback:(v)=>fmt(v)}}}}, x:{{grid:{{display:false}}}}}}
+      data: combined,
+      options: {{
+        responsive: true, maintainAspectRatio: false,
+        interaction: {{ mode: "index", intersect: false }},
+        plugins: {{
+          legend: {{ display: specs.length > 1, position: "bottom",
+                    labels: {{ boxWidth: 12, padding: 12, font: {{ size: 11 }} }} }},
+          tooltip: {{
+            callbacks: {{
+              label: (ctx) => ctx.dataset.label + ": " + fmt(ctx.parsed.y ?? ctx.parsed)
+            }}
+          }}
+        }},
+        scales: {{
+          y: {{ ticks: {{ callback: (v) => fmt(v) }} }},
+          x: {{ grid: {{ display: false }} }}
+        }}
       }}
     }});
   }} catch (e) {{
-    console.error("chart load failed", p.id, e);
-    document.getElementById("chart-"+p.id).parentNode.innerHTML =
-      '<div class="empty">Fout bij laden.</div>';
+    console.error("chart " + id + " gefaald", e);
+    showChartError(id, "Fout: " + (e.message || e));
   }}
 }}
+
 async function unpin(id) {{
   if (!confirm("Deze grafiek verwijderen?")) return;
   const r = await fetch("/api/pinned/" + id, {{method:"DELETE"}});
   if (r.ok) location.reload();
 }}
 
-// Vaste KPI: Nestor Core, laatste 12 maanden
-async function refreshKpis() {{
-  try {{
-    const r = await fetch("/api/kpi?segment=nestor_core&period_mode=ltm");
-    const d = await r.json();
-    document.getElementById("kpi-omzet").textContent = window.fmtEur(d.omzet);
-    document.getElementById("kpi-marge").textContent = window.fmtEur(d.marge);
-    document.getElementById("kpi-margepct").textContent =
-      d.marge_pct == null ? "—" : window.fmtNum(d.marge_pct, 2) + "%";
-    document.getElementById("kpi-mw").textContent =
-      (d.medewerkers || 0).toLocaleString("nl-BE");
-  }} catch (e) {{ console.error("kpi", e); }}
+if (typeof Chart === "undefined") {{
+  console.error("Chart.js is niet geladen — grafieken kunnen niet renderen");
+  document.querySelectorAll(".chart-card").forEach(card => {{
+    const empty = card.querySelector(".canvas-wrap");
+    if (empty) empty.innerHTML = '<div class="empty" style="color:var(--err)">Chart.js niet geladen</div>';
+  }});
+}} else {{
+  PINNED.forEach(renderChart);
 }}
-
-// Sync-bar (laatste sync, status, rijen) wordt door sync_bar_html() zelf
-// beheerd — geen extra JS hier nodig. We refreshen alleen de KPI's wanneer
-// de gebruiker op de sync-knop drukt.
-document.getElementById("db-sync-btn").addEventListener("click", () => {{
-  setTimeout(refreshKpis, 2500);
-}});
-
-refreshKpis();
-PINNED.forEach(renderChart);
 </script>
 """
 
@@ -651,8 +731,8 @@ def export_body() -> str:
 <form id="export-form" method="get" action="/prato/export.csv">
   <h2>Filters</h2>
   <div class="panel">
-    <div class="grid2">
-      <div><label>jaar <span class="hint">multi-select</span></label>
+    <div class="filter-grid">
+      <div><label>jaar</label>
         <select multiple id="f-jaar" name="jaar"></select></div>
       <div><label>kwartaal</label>
         <select multiple id="f-kwartaal" name="kwartaal"></select></div>
@@ -662,19 +742,16 @@ def export_body() -> str:
         <select multiple id="f-week" name="week"></select></div>
       <div><label>vestiging</label>
         <select multiple id="f-vest" name="vestigingseenheidreferentieid"></select></div>
-      <div><label>klant <span class="hint">type om te zoeken</span></label>
+      <div><label>klant</label>
         <select multiple id="f-klant" name="klantreferentieid"></select></div>
-      <div><label>persoon — naam <span class="hint">type om te zoeken</span></label>
-        <select multiple id="f-persoon-naam"></select>
-        <input type="hidden" id="f-familienaam" name="familienaam">
-        <input type="hidden" id="f-voornaam" name="voornaam">
-      </div>
-      <div><label>klantnaam <span class="hint">vrij tekstveld (LIKE)</span></label>
+      <div><label>persoon</label>
+        <select multiple id="f-persoon-naam"></select></div>
+      <div><label>klantnaam <span class="hint">vrij (LIKE)</span></label>
         <input type="text" name="klantnaam" placeholder="bv. Smartmat"></div>
     </div>
     <div class="actions">
       <button type="submit" class="primary">Download CSV</button>
-      <button type="reset" id="btn-reset">Filters wissen</button>
+      <button type="reset" id="btn-reset">Wissen</button>
     </div>
   </div>
 </form>
@@ -682,74 +759,88 @@ def export_body() -> str:
 <small>22 kolommen — UTF-8 zonder BOM, semicolon, Belgische decimaalkomma.</small>
 
 <script>
-// Multi-select autocomplete via Tom-Select voor elk veld.
-// Periode-velden (jaar/kwartaal/maand/week) krijgen statische opties.
-function initStatic(id, options) {
-  return new TomSelect("#" + id, {
-    plugins: ["remove_button"],
-    options: options.map(o => ({value: o, text: o})),
-    maxItems: null, hideSelected: true,
-    placeholder: "Alles",
-  });
-}
-const tsJaar = initStatic("f-jaar", []);
-const tsKw   = initStatic("f-kwartaal", [1,2,3,4]);
-const tsMnd  = initStatic("f-maand", [1,2,3,4,5,6,7,8,9,10,11,12]);
-const tsWk   = initStatic("f-week", Array.from({length:53}, (_,i)=>i+1));
+// Wikkel alle Tom-Select init in DOMContentLoaded zodat we niet runnen
+// vóór de <select>-elementen + Tom-Select bibliotheek beschikbaar zijn.
+(function setupExportFilters() {
+  function init() {
+    if (typeof TomSelect === "undefined") {
+      console.error("TomSelect niet geladen — filters blijven gewone HTML selects");
+      return;
+    }
 
-// Vestiging, klant, persoon: autocomplete via /api/filter-values
-function initAutocomplete(id, field, labelField=null) {
-  return new TomSelect("#" + id, {
-    plugins: ["remove_button"],
-    valueField: "value", labelField: labelField || "value",
-    searchField: labelField ? ["value", labelField] : ["value"],
-    maxItems: null, hideSelected: true,
-    placeholder: "Type 2 letters om te zoeken…",
-    load: async function(query, callback) {
-      if (!query || query.length < 2) { callback(); return; }
-      try {
-        const r = await fetch(`/api/filter-values?field=${field}&q=` + encodeURIComponent(query));
-        const d = await r.json();
-        callback(d.values || []);
-      } catch (e) { callback(); }
-    },
-    create: false,
-  });
-}
-const tsVest = initAutocomplete("f-vest", "vestigingseenheidreferentieid");
-const tsKlant = initAutocomplete("f-klant", "klantreferentieid", "label");
-const tsPersoon = initAutocomplete("f-persoon-naam", "persoon", "label");
+    function initStatic(id, options) {
+      return new TomSelect("#" + id, {
+        plugins: ["remove_button"],
+        options: options.map(o => ({value: String(o), text: String(o)})),
+        maxItems: null, hideSelected: true,
+        placeholder: "Alles", dropdownParent: "body",
+      });
+    }
+    const tsJaar = initStatic("f-jaar", []);
+    const tsKw   = initStatic("f-kwartaal", [1,2,3,4]);
+    const tsMnd  = initStatic("f-maand", [1,2,3,4,5,6,7,8,9,10,11,12]);
+    const tsWk   = initStatic("f-week", Array.from({length:53}, (_,i)=>i+1));
 
-// Vul jaar-opties dynamisch
-fetch("/api/filter-values?field=jaar&q=").then(r=>r.json()).then(d=>{
-  (d.values || []).forEach(v => tsJaar.addOption({value: v.value, text: v.value}));
-});
+    function initAutocomplete(id, field, labelField=null) {
+      return new TomSelect("#" + id, {
+        plugins: ["remove_button"],
+        valueField: "value", labelField: labelField || "value",
+        searchField: labelField ? ["value", labelField] : ["value"],
+        maxItems: null, hideSelected: true,
+        placeholder: "Type 2 letters…", dropdownParent: "body",
+        load: async function(query, callback) {
+          if (!query || query.length < 2) { callback(); return; }
+          try {
+            const r = await fetch("/api/filter-values?field=" + encodeURIComponent(field)
+                                  + "&q=" + encodeURIComponent(query));
+            const d = await r.json();
+            callback(d.values || []);
+          } catch (e) { callback(); }
+        },
+        create: false,
+      });
+    }
+    const tsVest = initAutocomplete("f-vest", "vestigingseenheidreferentieid");
+    const tsKlant = initAutocomplete("f-klant", "klant", "label");
+    const tsPersoon = initAutocomplete("f-persoon-naam", "persoon", "label");
 
-// Bij submit: bouw URL met multi-value params + familienaam/voornaam uit persoon-keuze
-document.getElementById("export-form").addEventListener("submit", function(e) {
-  e.preventDefault();
-  const params = new URLSearchParams();
-  const f = e.target;
-  [tsJaar, tsKw, tsMnd, tsWk, tsVest, tsKlant].forEach(ts => {
-    const name = ts.input.name;
-    ts.getValue().forEach(v => params.append(name, v));
-  });
-  // Persoon: gekozen items zijn refs. Geen aparte familienaam/voornaam parsing nodig
-  // tenzij gebruiker zelf een tekst typt — dan vallen we terug op klantnaam-stijl LIKE.
-  // Hier vragen we ipv multi-value persoonreferentieid:
-  tsPersoon.getValue().forEach(v => params.append("persoonreferentieid", v));
-  const klantnaam = f.elements["klantnaam"].value.trim();
-  if (klantnaam) params.append("klantnaam", klantnaam);
-  window.location.href = "/prato/export.csv?" + params.toString();
-});
+    // Pre-vul jaar-opties dynamisch (geen query nodig)
+    fetch("/api/filter-values?field=jaar&q=")
+      .then(r => r.json())
+      .then(d => {
+        (d.values || []).forEach(v =>
+          tsJaar.addOption({value: String(v.value), text: String(v.value)}));
+      })
+      .catch(e => console.warn("jaar-options laden mislukt", e));
 
-document.getElementById("btn-reset").addEventListener("click", () => {
-  setTimeout(() => {
-    [tsJaar, tsKw, tsMnd, tsWk, tsVest, tsKlant, tsPersoon].forEach(ts => ts.clear());
-  }, 10);
-});
+    // Submit-handler: bouw multi-value URL en navigeer
+    document.getElementById("export-form").addEventListener("submit", function(e) {
+      e.preventDefault();
+      const params = new URLSearchParams();
+      const f = e.target;
+      [tsJaar, tsKw, tsMnd, tsWk, tsVest, tsKlant].forEach(ts => {
+        const name = ts.input.name;
+        ts.getValue().forEach(v => params.append(name, v));
+      });
+      tsPersoon.getValue().forEach(v => params.append("persoonreferentieid", v));
+      const klantnaam = f.elements["klantnaam"].value.trim();
+      if (klantnaam) params.append("klantnaam", klantnaam);
+      window.location.href = "/prato/export.csv?" + params.toString();
+    });
 
-// Sync-bar wordt afgehandeld door sync_bar_html('ex') zelf — geen extra JS hier.
+    document.getElementById("btn-reset").addEventListener("click", () => {
+      setTimeout(() => {
+        [tsJaar, tsKw, tsMnd, tsWk, tsVest, tsKlant, tsPersoon].forEach(ts => ts.clear());
+      }, 10);
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
+})();
 </script>
 """)
 
@@ -827,6 +918,31 @@ def admin_body(historisch_summary: dict[str, Any]) -> str:
     </div>
   </form>
 </div>
+
+<h2>Dashboards</h2>
+<div class="panel">
+  <p style="margin:0 0 10px;color:var(--muted);font-size:13px">
+    Reset alle vastgepinde grafieken en herstel de defaults uit
+    <code>cache._DEFAULT_PINNED</code> en <code>cache._DEFAULT_PINNED_MULTI</code>.
+  </p>
+  <div class="actions">
+    <button type="button" class="danger" id="reset-pins-btn">Reset pinned charts</button>
+    <small id="reset-pins-status" style="align-self:center"></small>
+  </div>
+</div>
+<script>
+document.getElementById("reset-pins-btn").addEventListener("click", async () => {{
+  if (!confirm("Alle vastgepinde grafieken worden verwijderd en de defaults opnieuw geplaatst. Doorgaan?")) return;
+  const s = document.getElementById("reset-pins-status");
+  s.textContent = "Bezig…";
+  try {{
+    const r = await fetch("/admin/reset-pins", {{method:"POST"}});
+    const d = await r.json();
+    if (r.ok) s.innerHTML = `<span class="ok">${{d.new_count}} defaults geseed.</span>`;
+    else s.innerHTML = `<span class="err">Fout: ${{d.error||r.status}}</span>`;
+  }} catch (e) {{ s.innerHTML = `<span class="err">${{e}}</span>`; }}
+}});
+</script>
 
 <h2>Sektie → werknemerskengetal mapping</h2>
 <div class="panel">

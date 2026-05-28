@@ -79,6 +79,16 @@ def _period_filter(period_mode: str, period_value: Optional[str] = None) -> tupl
             raise ValueError("period_value moet 'YYYY-MM..YYYY-MM' zijn (bv. '2024-01..2025-06')")
         return "(jaar*100 + maand) BETWEEN ? AND ?", [sy * 100 + sm, ey * 100 + em]
 
+    if period_mode == "since":
+        # period_value-formaat: "YYYY-MM" (= alles vanaf die maand inclusief)
+        if not period_value:
+            raise ValueError("period_value vereist bij period_mode='since' (bv. '2025-01')")
+        try:
+            sy, sm = int(period_value[:4]), int(period_value[5:7])
+        except (ValueError, IndexError):
+            raise ValueError("period_value moet 'YYYY-MM' zijn bij period_mode='since'")
+        return "(jaar*100 + maand) >= ?", [sy * 100 + sm]
+
     raise ValueError(f"Onbekende period_mode: {period_mode}")
 
 
