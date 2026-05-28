@@ -611,7 +611,38 @@ function combineSeries(seriesList, chart_type) {{
   return {{ labels, datasets }};
 }}
 
-function buildChartConfig(p, combined, seriesList, showDataLabels) {{
+// Deterministische label-sampler: zorgt dat labels NOOIT overlappen.
+// Strategie:
+//  - eerste en laatste datapunt ALTIJD tonen
+//  - tussenliggende labels: evenredig verdeeld, max N per dataset
+//  - per dataset offset zodat twee series op DIFFERENT indexen tonen
+//    -> labels van series A en B vallen nooit op dezelfde x-positie
+function makeLabelDisplay(maxLabels) {{
+  return (ctx) => {{
+    const n = ctx.dataset.data.length;
+    if (n <= 2) return true;
+    // dataset-index in de chart (0 = eerste series, 1 = tweede, ...)
+    const dsIdx = ctx.datasetIndex || 0;
+    // Hoeveel labels deze series mag tonen (incl. eerste/laatste)
+    const want = Math.min(n, Math.max(2, maxLabels));
+    if (want >= n) return true;
+    // Eerste & laatste ALTIJD
+    if (ctx.dataIndex === 0 || ctx.dataIndex === n - 1) return true;
+    // Step zo gekozen dat we ~want labels tonen
+    const step = (n - 1) / (want - 1);
+    // Offset per dataset: tweede series schuift een halve step op,
+    // zodat labels van series A en series B NIET op dezelfde x staan.
+    const offset = (dsIdx * step) / 2;
+    // Zit dit datapunt op een sample-positie?
+    for (let k = 1; k < want - 1; k++) {{
+      const target = Math.round(k * step + offset);
+      if (target === ctx.dataIndex) return true;
+    }}
+    return false;
+  }};
+}}
+
+function buildChartConfig(p, combined, seriesList, showDataLabels, isModal) {{
   const hasRightAxis = seriesList.some(s => s.axis === "right");
   const leftUnit  = (seriesList.find(s => s.axis !== "right") || seriesList[0]).unit;
   const rightUnit = (seriesList.find(s => s.axis === "right") || seriesList[0]).unit;
@@ -678,9 +709,9 @@ function buildChartConfig(p, combined, seriesList, showDataLabels) {{
           }}
         }},
         datalabels: showDataLabels ? {{
-          // 'auto' display: chartjs-datalabels verbergt labels die zouden
-          // overlappen met andere labels op dezelfde chart.
-          display: "auto",
+          // Deterministische sampling i.p.v. 'auto' — voorkomt dat labels
+          // elkaar overschrijven én dat ze willekeurig verdwijnen.
+          display: makeLabelDisplay(isModal ? 14 : 7),
           // Smart positioning per dataset:
           //  - laatste punt -> label LINKS (anders valt het buiten canvas)
           //  - eerste punt  -> label RECHTS
@@ -693,7 +724,7 @@ function buildChartConfig(p, combined, seriesList, showDataLabels) {{
             return ctx.dataset.yAxisID === "y2" ? "bottom" : "top";
           }},
           anchor: "center",
-          offset: 8,
+          offset: 10,
           clip: false,
           backgroundColor: (ctx) => ctx.dataset.borderColor,
           color: "#fff",
@@ -733,8 +764,8 @@ async function renderChart(p) {{
     if (totalPoints === 0) {{ showChartEmpty(id); return; }}
 
     const combined = combineSeries(seriesList, p.chart_type);
-    // Datalabels ALTIJD tonen — bij veel datapunten worden ze compact (k/M).
-    const cfg = buildChartConfig(p, combined, seriesList, true);
+    // Datalabels ALTIJD tonen — sampling zorgt voor non-overlap.
+    const cfg = buildChartConfig(p, combined, seriesList, true, false);
 
     if (CHART_INSTANCES[id]) {{
       try {{ CHART_INSTANCES[id].destroy(); }} catch (e) {{}}
@@ -779,7 +810,7 @@ function openChartModal(id) {{
     metaBits.push(per);
   }}
   document.getElementById("modal-meta").textContent = metaBits.join(" · ");
-  const cfg = buildChartConfig(data.p, data.combined, data.seriesList, true);
+  const cfg = buildChartConfig(data.p, data.combined, data.seriesList, true, true);
   // Modal-versie: grotere fonts + ruime padding zodat datalabels op
   // randpunten niet door de Y-as worden afgekapt.
   cfg.options.plugins.legend.labels.font = {{ size: 14, weight: "600" }};
@@ -787,10 +818,10 @@ function openChartModal(id) {{
   if (cfg.options.plugins.datalabels) {{
     cfg.options.plugins.datalabels.font = {{ size: 13, weight: "700" }};
     cfg.options.plugins.datalabels.padding = {{ left: 8, right: 8, top: 4, bottom: 4 }};
-    cfg.options.plugins.datalabels.offset = 12;
-    // In modal: ALTIJD tonen (override 'auto' uit inline-versie) en
-    // volledig format gebruiken — er is ruimte genoeg.
-    cfg.options.plugins.datalabels.display = true;
+    cfg.options.plugins.datalabels.offset = 14;
+    // Display blijft sampler (makeLabelDisplay met max=14) — voorkomt
+    // overlap. Formatter wordt volledig (geen 'k'-suffix) want er is
+    // ruimte genoeg in de modal.
     cfg.options.plugins.datalabels.formatter = (v, ctx) => {{
       if (v == null) return "";
       const fmt = window.unitFormatter(ctx.dataset._unit || "");
